@@ -37,7 +37,13 @@ get_wifi_quality() {
     local signal_line level
     signal_line="$(iwconfig wlan0 2>/dev/null)" || { echo "Unknown"; return; }
 
-    [[ $signal_line =~ Signal\ level=(-?[0-9]+) ]] && level="${BASH_REMATCH[1]#-}" || { echo "Unknown"; return; }
+    # FIXED: SC2015
+    if [[ $signal_line =~ Signal\ level=(-?[0-9]+) ]]; then
+        level="${BASH_REMATCH[1]#-}"
+    else
+        echo "Unknown"
+        return
+    fi
 
     if ((level >= 70)); then echo "Bad"
     elif ((level >= 60)); then echo "Regular"

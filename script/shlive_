@@ -32,7 +32,10 @@ readonly HEARTBEAT_INTERVAL=10         # Update heartbeat every 10 captures
 #===============================================================================
 cleanup() {
   pkill -9 raspistill 2>/dev/null || true
-  [[ -f "$IMAGE_FILE" ]] && rm -f "$IMAGE_FILE" 2>/dev/null || true
+  # FIXED: SC2015
+  if [[ -f "$IMAGE_FILE" ]]; then
+    rm -f "$IMAGE_FILE" 2>/dev/null || true
+  fi
   # Mark service as stopped
   echo "stopped:$(date +%s)" > "$HEARTBEAT_FILE" 2>/dev/null || true
   curl -sf -X POST -d "file=tmp/web_live.tmp" -d "data=off" "$API_ENDPOINT" -m 2 &>/dev/null || true
@@ -156,7 +159,8 @@ update_heartbeat() {
   local count="${1:-0}"
   # Update heartbeat every N captures (just timestamp, no prefix)
   if (( count % HEARTBEAT_INTERVAL == 0 )); then
-    echo "$(date +%s)" > "$HEARTBEAT_FILE" 2>/dev/null || true
+    # FIXED: SC2005 - useless echo
+    date +%s > "$HEARTBEAT_FILE" 2>/dev/null || true
     # Optional: Upload heartbeat to server
     curl -sf -X POST -d "file=tmp/live_heartbeat.tmp" -d "data=$(date +%s)" \
       "$API_ENDPOINT" -m 2 &>/dev/null || true
@@ -194,8 +198,12 @@ main() {
         sleep "$CAPTURE_DELAY"
       else
         ((failure_count++))
-        # Exponential backoff on failures
-        (( failure_count > 5 )) && sleep "$FAILURE_DELAY" || sleep "$CAPTURE_DELAY"
+        # Exponential backoff on failures (FIXED: SC2015)
+        if (( failure_count > 5 )); then
+          sleep "$FAILURE_DELAY"
+        else
+          sleep "$CAPTURE_DELAY"
+        fi
       fi
     else
       # Offline mode - wait and check

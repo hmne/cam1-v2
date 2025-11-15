@@ -45,8 +45,9 @@ get_version() {
     local version_output
     version_output=$("$BORE_BIN" --version 2>/dev/null) || { echo "0.0.0"; return; }
 
-    # Extract second word (version number)
-    local words=($version_output)
+    # Extract second word (version number) (FIXED: SC2206)
+    local -a words
+    read -ra words <<< "$version_output"
     if [[ ${#words[@]} -ge 2 ]]; then
         echo "${words[1]}"
     else

@@ -211,9 +211,11 @@ while true; do
             curl -sf --data "file=tmp/monitor.tmp&data=off" "$BASE_URL/storage.php" -m 2 &>/dev/null || true
             curl -sf --data "file=tmp/monitor_heartbeat.tmp&data=0" "$BASE_URL/storage.php" -m 2 &>/dev/null || true
 
-            # Restore web_live if it was active before
+            # Restore web_live if it was active before (FIXED: SC2015)
             prev=$(curl -sf "$BASE_URL/tmp/web_live_previous.tmp" -m 2 2>/dev/null | tr -d '[:space:]') || prev=""
-            [[ "$prev" == "on" ]] && curl -sf --data "file=tmp/web_live.tmp&data=on" "$BASE_URL/storage.php" -m 2 &>/dev/null || true
+            if [[ "$prev" == "on" ]]; then
+              curl -sf --data "file=tmp/web_live.tmp&data=on" "$BASE_URL/storage.php" -m 2 &>/dev/null || true
+            fi
             curl -sf --data "file=tmp/web_live_previous.tmp&data=" "$BASE_URL/storage.php" -m 2 &>/dev/null || true
 
             # Kill camera and restore buffer

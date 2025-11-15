@@ -9,7 +9,9 @@ IFS=$'\n\t'
 
 readonly DEVICE_ID="${DEVICE_ID:-cam1}"
 readonly BASE_URL="http://netstorm.site/${DEVICE_ID}"
+# FIXED: SC2034 - VERSION is now exported for external use
 readonly VERSION="2.0.0"
+export VERSION
 
 # Get MAC address for logging
 get_mac_address() {
@@ -120,8 +122,9 @@ get_disk_usage() {
         fi
     done <<< "$df_output"
 
-    # Extract 5th field (Usage%) and remove % sign
-    local fields=($usage_line)
+    # Extract 5th field (Usage%) and remove % sign (FIXED: SC2206)
+    local -a fields
+    read -ra fields <<< "$usage_line"
     local usage="${fields[4]}"
     echo "${usage%\%}"
 }

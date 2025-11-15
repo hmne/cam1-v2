@@ -1,4 +1,90 @@
 #!/usr/bin/env bash
+#
+#===============================================================================
+# Camera Boot Script
+#===============================================================================
+#
+# File: shboot_
+# Description: Initializes Raspberry Pi camera system on boot
+# Author: Net Storm
+# Version: 2.1.0
+# Date: 2025-11-15
+# License: Proprietary
+#
+# This script is downloaded and executed automatically on Raspberry Pi boot:
+#   cd /tmp/
+#   wget https://netstorm.site/cam1/script/shboot_ -O boot.sh
+#   sudo ./boot.sh
+#
+#===============================================================================
+# DEPENDENCIES
+#===============================================================================
+#
+# Required commands:
+#   - wget          Download files from server
+#   - vcgencmd      Raspberry Pi camera detection
+#   - raspistill    Camera capture
+#   - jpegoptim     Image optimization
+#   - curl          HTTP requests
+#
+# Optional commands:
+#   - iwconfig      WiFi power settings
+#   - iw            WiFi power save control
+#
+#===============================================================================
+# FEATURES
+#===============================================================================
+#
+# - Camera detection and testing
+# - Web interface setup (HTML/CSS/JS/PHP)
+# - Service scripts download (sync, live, tunnels)
+# - Parallel downloads for faster boot
+# - Plugin system support
+# - WiFi optimization
+# - Comprehensive logging
+# - Enhanced error handling
+#
+#===============================================================================
+# USAGE
+#===============================================================================
+#
+# This script is designed to run automatically via cron @reboot:
+#   @reboot cd /tmp && wget https://netstorm.site/cam1/script/shboot_ -O boot.sh && sudo ./boot.sh
+#
+# Manual execution:
+#   sudo bash shboot_
+#
+# Environment Variables:
+#   DEVICE_ID       - Camera identifier (default: cam1)
+#   REBOOT_ON_FAIL  - Auto-reboot on camera failure (default: no)
+#
+#===============================================================================
+# EXIT CODES
+#===============================================================================
+#
+# 0 - Success
+# 2 - Web setup failed
+# 3 - Script setup failed
+# 4 - Service start failed
+#
+#===============================================================================
+# CHANGELOG
+#===============================================================================
+#
+# 2.1.0 - 2025-11-15
+#   - Fixed SC2155: Separated declare and assign (4 instances)
+#   - Fixed SC2015: Replaced && || patterns with if-then-else (3 instances)
+#   - Fixed SC2086: Added missing quotes (1 instance)
+#   - Added comprehensive file header documentation
+#   - Enhanced error handling throughout
+#   - Improved plugin loader with error tracking
+#   - Added function documentation
+#
+# 2.0.0 - Previous version
+#   - Initial enterprise refactoring
+#
+#===============================================================================
+
 set -euo pipefail
 IFS=$'\n\t'
 
@@ -17,143 +103,261 @@ readonly EXIT_WEB_SETUP_FAIL=2
 readonly EXIT_SCRIPT_SETUP_FAIL=3
 readonly EXIT_SERVICE_START_FAIL=4
 
-#-------------------------------------------------------------------------------
-# Get MAC address (Pure Bash)
-#-------------------------------------------------------------------------------
+#######################################
+# Get MAC address of WiFi interface
+# Uses multiple methods for compatibility
+# Globals:
+#   None
+# Arguments:
+#   None
+# Returns:
+#   MAC address or 'unknown'
+#######################################
 get_mac() {
     local mac_file="/sys/class/net/wlan0/address"
+
+    # Try reading from sysfs first (fastest)
     [[ -r $mac_file ]] && { printf '%s' "$(<"$mac_file")"; return; }
 
-    command -v ip &>/dev/null && {
-        local out="$(ip link show wlan0 2>/dev/null)"
-        [[ $out =~ link/ether[[:space:]]+([0-9a-f:]+) ]] && {
-            printf '%s' "${BASH_REMATCH[1]}"
+    # Fallback to ip command
+    if command -v ip &>/dev/null; then
+        local out
+        out="$(ip link show wlan0 2>/dev/null)" || {
+            printf 'unknown'
             return
         }
-    }
+
+        if [[ $out =~ link/ether[[:space:]]+([0-9a-f:]+) ]]; then
+            printf '%s' "${BASH_REMATCH[1]}"
+            return
+        fi
+    fi
+
     printf 'unknown'
 }
 
-readonly MAC="$(get_mac)"
+# Get MAC address once at startup
+MAC_ADDRESS=""
+MAC_ADDRESS="$(get_mac)" || MAC_ADDRESS="unknown"
+readonly MAC="$MAC_ADDRESS"
 
-#-------------------------------------------------------------------------------
-# Cleanup trap
-#-------------------------------------------------------------------------------
+#######################################
+# Cleanup function called on exit
+# Globals:
+#   EXIT_SUCCESS
+#   BASE_URL
+# Arguments:
+#   None (uses $? for exit code)
+# Returns:
+#   Exits with original exit code
+#######################################
 cleanup() {
     local exit_code=$?
+
+    # Remove test image if exists
     [[ -f /tmp/test.jpg ]] && rm -f /tmp/test.jpg
 
+    # Kill all background jobs gracefully
     local pid
     for pid in $(jobs -p 2>/dev/null); do
         kill -TERM "$pid" 2>/dev/null || :
         wait "$pid" 2>/dev/null || :
     done
 
-    ((exit_code != EXIT_SUCCESS)) && {
+    # Log errors
+    if ((exit_code != EXIT_SUCCESS)); then
         printf '[%s] [ERROR] Exit code: %s\n' "$(date '+%H:%M:%S')" "$exit_code" >&2
         curl -sf --data "file=log/log.txt&data=[ERROR] Exit Code: ${exit_code}, $(TZ=Asia/Kuwait date '+%d/%m/%Y %I:%M:%S %p')." "${BASE_URL}/storage.php" -m 3 >/dev/null 2>&1 || :
-    }
+    fi
+
     exit "$exit_code"
 }
 trap cleanup EXIT INT TERM
 
-#-------------------------------------------------------------------------------
-# Logging
-#-------------------------------------------------------------------------------
-log() { printf '[%s] [%s] %s\n' "$(date '+%H:%M:%S')" "$1" "$2"; }
+#######################################
+# Log message to console
+# Arguments:
+#   $1 - Log level (INFO|WARN|ERROR)
+#   $2 - Message
+# Returns:
+#   None
+#######################################
+log() {
+    printf '[%s] [%s] %s\n' "$(date '+%H:%M:%S')" "$1" "$2"
+}
 
+#######################################
+# Log message to remote server
+# Arguments:
+#   $1 - Log level
+#   $2 - Message
+# Returns:
+#   0 on success, 1 on failure (non-blocking)
+#######################################
 log_web() {
     curl -sf --data "file=log/log.txt&data=[$1] $2, $(TZ=Asia/Kuwait date '+%d/%m/%Y %I:%M:%S %p')." "${BASE_URL}/storage.php" -m 5 >/dev/null 2>&1 || :
 }
 
-#-------------------------------------------------------------------------------
-# Download (Pure Bash where possible)
-#-------------------------------------------------------------------------------
+#######################################
+# Download file with retries
+# Arguments:
+#   $1 - Source URL
+#   $2 - Destination file path
+# Returns:
+#   0 on success, 1 on failure
+#######################################
 dl() {
-    local url=$1 out=$2 try=0
-    while ((try++ < 3)); do
-        wget -qO "$out" "$url" 2>/dev/null && [[ -s $out ]] && return 0
-        [[ -f $out ]] && rm -f "$out"
+    local url="$1"
+    local out="$2"
+    local try=0
+    local max_retries=3
+
+    while ((try++ < max_retries)); do
+        if wget -qO "$out" "$url" 2>/dev/null && [[ -s "$out" ]]; then
+            return 0
+        fi
+
+        # Cleanup failed download
+        [[ -f "$out" ]] && rm -f "$out"
         sleep 1
     done
-    log "ERROR" "Download failed: ${out##*/}"
+
+    log "ERROR" "Download failed after ${max_retries} attempts: ${out##*/}"
     return 1
 }
 
-#-------------------------------------------------------------------------------
-# Camera (Pure Bash string operations)
-#-------------------------------------------------------------------------------
+#######################################
+# Test camera hardware and functionality
+# Globals:
+#   BASE_URL
+# Arguments:
+#   None
+# Returns:
+#   0 on success, 1 on failure
+#######################################
 test_cam() {
     log "INFO" "Testing camera..."
 
-    # Check detection (Pure Bash)
-    local cam_info="$(vcgencmd get_camera 2>/dev/null)"
-    [[ $cam_info == *"detected=1"* ]] || {
+    # Check camera detection
+    local cam_info
+    if ! cam_info="$(vcgencmd get_camera 2>/dev/null)"; then
+        log "ERROR" "Failed to query camera"
+        log_web "ERROR" "Camera Query Failed"
+        return 1
+    fi
+
+    if [[ $cam_info != *"detected=1"* ]]; then
         log "WARN" "Camera not detected"
         log_web "ERROR" "Camera Not Connected"
         return 1
-    }
+    fi
 
-    # Check if busy (Pure Bash - avoid ls/grep)
+    # Check if camera is busy (Pure Bash - avoid ls/grep)
     local fd link
     for fd in /proc/*/fd/*; do
         [[ -L $fd ]] || continue
         link="$(readlink "$fd" 2>/dev/null)" || continue
-        [[ $link == "/dev/video0" ]] && {
+        if [[ $link == "/dev/video0" ]]; then
             log "WARN" "Camera busy"
             log_web "ERROR" "Camera Busy"
             return 1
-        }
+        fi
     done
 
-    # Capture, optimize, upload
-    raspistill -n -t 300 -q 5 -o test.jpg -a 1020 2>/dev/null && \
-    [[ -s test.jpg ]] && \
-    jpegoptim --strip-all test.jpg 2>/dev/null && \
-    curl -sf -F "upfile=@test.jpg" "${BASE_URL}/storage.php" -m 10 >/dev/null 2>&1 || {
-        log "WARN" "Camera test failed"
-        log_web "ERROR" "Camera Test Failed"
-        [[ -f test.jpg ]] && rm -f test.jpg
+    # Capture test image
+    if ! raspistill -n -t 300 -q 5 -o test.jpg -a 1020 2>/dev/null; then
+        log "WARN" "Camera capture failed"
+        log_web "ERROR" "Camera Capture Failed"
         return 1
-    }
+    fi
+
+    if [[ ! -s test.jpg ]]; then
+        log "WARN" "Camera produced empty file"
+        log_web "ERROR" "Empty Image File"
+        rm -f test.jpg
+        return 1
+    fi
+
+    # Optimize image
+    if command -v jpegoptim &>/dev/null; then
+        jpegoptim --strip-all test.jpg 2>/dev/null || {
+            log "WARN" "Image optimization failed"
+        }
+    fi
+
+    # Upload test image
+    if ! curl -sf -F "upfile=@test.jpg" "${BASE_URL}/storage.php" -m 10 >/dev/null 2>&1; then
+        log "WARN" "Upload failed"
+        log_web "ERROR" "Upload Failed"
+        rm -f test.jpg
+        return 1
+    fi
 
     rm -f test.jpg
     log "INFO" "Camera ready"
     return 0
 }
 
+#######################################
+# Check camera with retries
+# Globals:
+#   REBOOT
+# Arguments:
+#   None
+# Returns:
+#   0 on success, 1 on failure
+#######################################
 check_cam() {
     local i=0
-    while ((i++ < 3)); do
-        test_cam && { log_web "OK" "Camera Ready"; return 0; }
-        ((i < 3)) && {
-            log "WARN" "Retrying camera (${i}/3)..."
-            log_web "RETRY" "Camera Test ${i}/3"
+    local max_retries=3
+
+    while ((i++ < max_retries)); do
+        if test_cam; then
+            log_web "OK" "Camera Ready"
+            return 0
+        fi
+
+        if ((i < max_retries)); then
+            log "WARN" "Retrying camera (${i}/${max_retries})..."
+            log_web "RETRY" "Camera Test ${i}/${max_retries}"
             sleep 2
-        }
+        fi
     done
+
     log "WARN" "Camera check failed"
     log_web "FAIL" "Camera Failed All Tests"
-    [[ $REBOOT == yes ]] && { log_web "SYSTEM" "Rebooting"; sleep 1; reboot -f; }
+
+    if [[ $REBOOT == yes ]]; then
+        log_web "SYSTEM" "Rebooting"
+        sleep 1
+        reboot -f
+    fi
+
     log_web "SYSTEM" "Auto-Reboot Disabled"
     return 1
 }
 
-#-------------------------------------------------------------------------------
-# Setup web (Pure Bash)
-#-------------------------------------------------------------------------------
+#######################################
+# Setup web interface files
+# Globals:
+#   BASE_URL
+# Arguments:
+#   None
+# Returns:
+#   0 on success, 1 on failure
+#######################################
 setup_web() {
-    [[ -f /var/www/html/captura.php ]] && {
+    if [[ -f /var/www/html/captura.php ]]; then
         log "INFO" "Web files present"
         log_web "INFO" "Web Files Already Present"
         return 0
-    }
+    fi
 
     cd /var/www/html || return 1
     log "INFO" "Setting up web files"
     log_web "INFO" "Setting Up Web Files"
 
-    # Create files (Pure Bash)
+    # Create initial files (Pure Bash)
     : >index.html
     printf '%s\n' "3 5 33333 -35 0 none 100" >var.tmp
     printf '%s\n' "off" >onoff.tmp
@@ -161,7 +365,7 @@ setup_web() {
     printf '%s\n' "off" >monitor.tmp
     chown www-data:www-data ./*.tmp 2>/dev/null || :
 
-    # Parallel downloads
+    # Parallel downloads for speed
     {
         dl "${BASE_URL}/web/file_mon.css" file.css
         dl "${BASE_URL}/jquery-3.7.1.min.js" jquery-3.7.1.min.js
@@ -184,9 +388,15 @@ setup_web() {
     log_web "OK" "Web Files Setup Complete"
 }
 
-#-------------------------------------------------------------------------------
-# Setup scripts (Pure Bash)
-#-------------------------------------------------------------------------------
+#######################################
+# Download service scripts
+# Globals:
+#   BASE_URL
+# Arguments:
+#   None
+# Returns:
+#   0 on success, 1 on failure
+#######################################
 setup_scripts() {
     cd /tmp || return 1
     : >url.tmp
@@ -196,7 +406,7 @@ setup_scripts() {
     log "INFO" "Downloading scripts"
     log_web "INFO" "Downloading Scripts"
 
-    # Parallel downloads
+    # Parallel downloads for speed
     {
         dl "${BASE_URL}/script/shsync_" sync.sh
         dl "${BASE_URL}/script/shlive_" live.sh
@@ -219,9 +429,15 @@ setup_scripts() {
     log_web "OK" "Scripts Downloaded & Ready"
 }
 
-#-------------------------------------------------------------------------------
-# Start services
-#-------------------------------------------------------------------------------
+#######################################
+# Start all background services
+# Globals:
+#   None
+# Arguments:
+#   None
+# Returns:
+#   0 on success
+#######################################
 start_services() {
     cd /tmp || return 1
     log "INFO" "Starting services"
@@ -242,7 +458,7 @@ start_services() {
         [[ -x ./tunel4.sh ]] && ./tunel4.sh start >/dev/null 2>&1 &
     } &
 
-    # Monitor (Fixed - proper subshell with cd)
+    # Monitor process (proper subshell with cd)
     [[ -x /var/www/html/monitor.sh ]] && (
         cd /var/www/html || exit 1
         exec ./monitor.sh >/dev/null 2>&1 &
@@ -251,19 +467,46 @@ start_services() {
     log_web "OK" "All Services Started"
 }
 
-#-------------------------------------------------------------------------------
-# WiFi config
-#-------------------------------------------------------------------------------
+#######################################
+# Configure WiFi power settings
+# Globals:
+#   None
+# Arguments:
+#   None
+# Returns:
+#   0 always (non-critical)
+#######################################
 setup_wifi() {
     [[ -e /sys/class/net/wlan0 ]] || return 0
-    command -v iwconfig &>/dev/null && iwconfig wlan0 txpower 26 2>/dev/null || :
-    command -v iw &>/dev/null && iw wlan0 set power_save off 2>/dev/null || :
+
+    if command -v iwconfig &>/dev/null; then
+        if iwconfig wlan0 txpower 26 2>/dev/null; then
+            log "INFO" "WiFi power set to 26dBm"
+        else
+            log "WARN" "Failed to set WiFi power"
+        fi
+    fi
+
+    if command -v iw &>/dev/null; then
+        if iw wlan0 set power_save off 2>/dev/null; then
+            log "INFO" "WiFi power save disabled"
+        else
+            log "WARN" "Failed to disable power save"
+        fi
+    fi
+
     log_web "OK" "WiFi Configured"
 }
 
-#-------------------------------------------------------------------------------
+#######################################
 # Load plugins from manifest (Pure Bash, no jq)
-#-------------------------------------------------------------------------------
+# Globals:
+#   BASE_URL
+# Arguments:
+#   None
+# Returns:
+#   0 always (non-critical)
+#######################################
 load_plugins() {
     cd /tmp || return 0
 
@@ -271,42 +514,53 @@ load_plugins() {
 
     # Download manifest
     local manifest="/tmp/plugins_manifest.json"
-    if ! wget -qO "$manifest" "${BASE_URL}/includes/plugins/manifest.json" 2>/dev/null || [[ ! -s $manifest ]]; then
+    if ! wget -qO "$manifest" "${BASE_URL}/includes/plugins/manifest.json" 2>/dev/null; then
         log "INFO" "No plugins manifest - skipping"
-        [[ -f $manifest ]] && rm -f "$manifest"
+        [[ -f "$manifest" ]] && rm -f "$manifest"
+        return 0
+    fi
+
+    if [[ ! -s "$manifest" ]]; then
+        log "INFO" "Empty plugins manifest - skipping"
+        rm -f "$manifest"
         return 0
     fi
 
     log "INFO" "Plugins manifest found"
 
     # Parse manifest for enabled plugins (Pure Bash)
-    local in_plugin=0 plugin_name="" plugin_script="" plugin_enabled=""
+    local in_plugin=0
+    local plugin_name=""
+    local plugin_script=""
+    local plugin_enabled=""
+    local loaded_count=0
+    local failed_count=0
 
     while IFS= read -r line; do
         # Detect plugin name (skip top-level "plugins" key)
-        [[ $line =~ \"([^\"]+)\":[[:space:]]*\{ ]] && {
+        if [[ $line =~ \"([^\"]+)\":[[:space:]]*\{ ]]; then
             plugin_name="${BASH_REMATCH[1]}"
             [[ $plugin_name == "plugins" ]] && continue  # Skip root object
             in_plugin=1
             plugin_script=""
             plugin_enabled=""
             continue
-        }
+        fi
 
         # Inside plugin block
-        ((in_plugin)) && {
+        if ((in_plugin)); then
             # Check enabled status
-            [[ $line =~ \"enabled\":[[:space:]]*(true|false) ]] && {
+            if [[ $line =~ \"enabled\":[[:space:]]*(true|false) ]]; then
                 plugin_enabled="${BASH_REMATCH[1]}"
-            }
+            fi
 
             # Get script path
-            [[ $line =~ \"script\":[[:space:]]*\"([^\"]+)\" ]] && {
+            if [[ $line =~ \"script\":[[:space:]]*\"([^\"]+)\" ]]; then
                 plugin_script="${BASH_REMATCH[1]}"
-            }
+            fi
 
             # End of plugin block
-            [[ $line =~ \} ]] && {
+            if [[ $line =~ \} ]]; then
                 in_plugin=0
 
                 # Load plugin if enabled and has script
@@ -316,63 +570,91 @@ load_plugins() {
                     local script_url="${BASE_URL}/includes/plugins/${plugin_script}"
                     local script_file="/tmp/plugin_${plugin_name}.sh"
 
-                    if wget -qO "$script_file" "$script_url" 2>/dev/null && [[ -s $script_file ]]; then
-                        chmod +x "$script_file" 2>/dev/null || :
-
-                        # Start plugin in background from /tmp directory
-                        ( cd /tmp && [[ -x ./plugin_${plugin_name}.sh ]] && ./plugin_${plugin_name}.sh >/dev/null 2>&1 & )
-
-                        log "INFO" "Plugin started: ${plugin_name}"
-                        log_web "OK" "Plugin Loaded: ${plugin_name}"
+                    if wget -qO "$script_file" "$script_url" 2>/dev/null && [[ -s "$script_file" ]]; then
+                        if chmod +x "$script_file" 2>/dev/null; then
+                            # Start plugin in background from /tmp directory (FIXED: SC2086)
+                            if ( cd /tmp && [[ -x ./plugin_"${plugin_name}".sh ]] && ./plugin_"${plugin_name}".sh >/dev/null 2>&1 & ); then
+                                log "INFO" "Plugin started: ${plugin_name}"
+                                log_web "OK" "Plugin Loaded: ${plugin_name}"
+                                ((loaded_count++))
+                            else
+                                log "ERROR" "Plugin failed to start: ${plugin_name}"
+                                log_web "ERROR" "Plugin ${plugin_name} start failed"
+                                ((failed_count++))
+                            fi
+                        else
+                            log "ERROR" "Failed to make plugin executable: ${plugin_name}"
+                            rm -f "$script_file"
+                            ((failed_count++))
+                        fi
                     else
                         log "WARN" "Plugin script not found: ${plugin_name}"
                         log_web "WARN" "Plugin ${plugin_name} in manifest but file missing"
-                        [[ -f $script_file ]] && rm -f "$script_file"
+                        [[ -f "$script_file" ]] && rm -f "$script_file"
+                        ((failed_count++))
                     fi
                 fi
-            }
-        }
+            fi
+        fi
     done < "$manifest"
 
     rm -f "$manifest"
-    log "INFO" "Plugin loading complete"
+    log "INFO" "Plugin loading complete (loaded: ${loaded_count}, failed: ${failed_count})"
 }
 
-#-------------------------------------------------------------------------------
-# Main
-#-------------------------------------------------------------------------------
+#######################################
+# Main entry point
+# Globals:
+#   DEVICE_ID
+#   MAC
+# Arguments:
+#   None
+# Returns:
+#   Exits with appropriate code
+#######################################
 main() {
-    local cam="NOT_DETECTED" start="$(date +%s)"
+    local cam="NOT_DETECTED"
+    local start
+    start="$(date +%s)" || start=0
 
     log "INFO" "=== Boot Starting ==="
     log "INFO" "Device: ${DEVICE_ID}"
     log "INFO" "MAC: ${MAC}"
     log_web "INFO" "Boot Starting - ${DEVICE_ID}"
 
-    check_cam && cam="READY"
+    # Check camera (non-critical)
+    if check_cam; then
+        cam="READY"
+    fi
 
-    setup_web || {
+    # Setup web interface (critical)
+    if ! setup_web; then
         log "ERROR" "Web setup failed"
         log_web "ERROR" "Web Setup Failed"
         exit "$EXIT_WEB_SETUP_FAIL"
-    }
+    fi
 
-    setup_scripts || {
+    # Setup scripts (critical)
+    if ! setup_scripts; then
         log "ERROR" "Scripts setup failed"
         log_web "ERROR" "Scripts Setup Failed"
         exit "$EXIT_SCRIPT_SETUP_FAIL"
-    }
+    fi
 
-    start_services || {
+    # Start services (critical)
+    if ! start_services; then
         log "ERROR" "Services start failed"
         log_web "ERROR" "Services Start Failed"
         exit "$EXIT_SERVICE_START_FAIL"
-    }
+    fi
 
+    # WiFi setup (non-critical)
     setup_wifi
 
+    # Load plugins (non-critical)
     load_plugins
 
+    # Calculate boot duration
     local dur="$(($(date +%s) - start))"
 
     log "INFO" "=== Boot Complete ==="
@@ -384,4 +666,5 @@ main() {
     log_web "SUCCESS" "BOOTED - Camera: ${cam} | Device: ${DEVICE_ID^^} - MAC: ${MAC} | Duration: ${dur}s"
 }
 
+# Only run main if executed directly (not sourced)
 [[ ${BASH_SOURCE[0]} == "${0}" ]] && main "$@"

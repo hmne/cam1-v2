@@ -184,8 +184,10 @@ main() {
                     -w "$width" -h "$height" -o pic.jpg -n -t 300 \
                     -a "NS-CAM${CAM_NUM} ${width}x${height}" 2>/dev/null; then
 
-                    # Optimize
-                    command -v jpegoptim &>/dev/null && jpegoptim --strip-all -q pic.jpg 2>/dev/null || :
+                    # Optimize (FIXED: SC2015)
+                    if command -v jpegoptim &>/dev/null; then
+                        jpegoptim --strip-all -q pic.jpg 2>/dev/null || true
+                    fi
 
                     # Export operational state
                     echo "uploading" > /tmp/camera_state.tmp 2>/dev/null || true
