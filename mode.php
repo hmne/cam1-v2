@@ -1,0 +1,305 @@
+<?php
+
+declare(strict_types=1);
+
+/**
+ * Camera Status Display Module - Enterprise Grade
+ *
+ * Dynamically loaded component that displays:
+ * - Camera online/offline status
+ * - System information (temperature, memory, signal)
+ * - Server/tunnel access buttons
+ * - Latest log entries
+ *
+ * Security Features:
+ * - HTML escaping for all output
+ * - URL validation before display
+ * - Safe file reading with size limits
+ *
+ * @category  StatusDisplay
+ * @package   CameraControl
+ * @author    Net Storm
+ * @license   Proprietary
+ * @version   2.0.0
+ * @standards PSR-12, OWASP Top 10, Clean Code, SOLID
+ */
+
+// =============================================================================
+// INITIALIZATION
+// =============================================================================
+
+require_once __DIR__ . '/config/app-config.php';
+require_once __DIR__ . '/includes/utilities.php';
+
+// =============================================================================
+// DATA RETRIEVAL
+// =============================================================================
+
+/**
+ * Retrieve and parse camera status data
+ *
+ * @return array Parsed status data with defaults
+ */
+function getCameraStatusData(): array
+{
+    $statusData = readFileSecure(CAMERA_STATUS_FILE);
+
+    if ($statusData === '') {
+        return ['N/A', 'N/A', 'N/A', 'N/A'];
+    }
+
+    $parts = explode(',', $statusData);
+
+    // Ensure we have exactly 4 parts
+    while (count($parts) < 4) {
+        $parts[] = 'N/A';
+    }
+
+    return array_slice($parts, 0, 4);
+}
+
+/**
+ * Retrieve tunnel/server URLs with validation
+ *
+ * @return array Array of validated URLs
+ */
+function getTunnelUrls(): array
+{
+    $urls = [];
+
+    foreach (TUNNEL_URL_FILES as $index => $file) {
+        $url = readFileSecure($file);
+
+        if ($url !== '') {
+            // Validate URL for security
+            $validated = validateUrl($url);
+            $urls[] = $validated !== false ? $validated : '';
+        } else {
+            $urls[] = '';
+        }
+    }
+
+    return $urls;
+}
+
+/**
+ * Check if camera is currently online
+ *
+ * @return bool True if camera is online
+ */
+function isCameraOnline(): bool
+{
+    if (!file_exists(CAMERA_STATUS_FILE)) {
+        return false;
+    }
+
+    $lastModified = filemtime(CAMERA_STATUS_FILE);
+    if ($lastModified === false) {
+        return false;
+    }
+
+    $secondsSinceUpdate = time() - $lastModified;
+
+    return $secondsSinceUpdate <= CAMERA_ONLINE_TIMEOUT_SECONDS && $lastModified > 946684800; // After 2000-01-01
+}
+
+/**
+ * Get formatted last access time
+ *
+ * @return string Formatted timestamp or 'N/A'
+ */
+function getLastAccessTime(): string
+{
+    if (!file_exists(CAMERA_STATUS_FILE)) {
+        return 'N/A';
+    }
+
+    $timestamp = filemtime(CAMERA_STATUS_FILE);
+    if ($timestamp === false || $timestamp === 0) {
+        return 'N/A';
+    }
+
+    return date('j/n/Y H:i:s', $timestamp);
+}
+
+/**
+ * Get seconds since last status update
+ *
+ * @return int Seconds since update (999 if unavailable)
+ */
+function getSecondsSinceUpdate(): int
+{
+    if (!file_exists(CAMERA_STATUS_FILE)) {
+        return 999;
+    }
+
+    $timestamp = filemtime(CAMERA_STATUS_FILE);
+    if ($timestamp === false) {
+        return 999;
+    }
+
+    return time() - $timestamp;
+}
+
+/**
+ * Retrieve latest relevant log entry
+ *
+ * @return string Latest log entry or empty string
+ */
+function getLatestLogEntry(): string
+{
+    if (!file_exists(MAIN_LOG_FILE) || !is_readable(MAIN_LOG_FILE)) {
+        return '';
+    }
+
+    $maxLines = 50;
+    $lines = [];
+    $fp = fopen(MAIN_LOG_FILE, 'r');
+
+    if ($fp === false) {
+        return '';
+    }
+
+    fseek($fp, -1, SEEK_END);
+    $pos = ftell($fp);
+    $lastLine = '';
+    $lineCount = 0;
+
+    while ($pos > 0 && $lineCount < $maxLines) {
+        fseek($fp, $pos, SEEK_SET);
+        $char = fgetc($fp);
+
+        if ($char === "\n" && !empty($lastLine)) {
+            $lines[] = $lastLine;
+            $lineCount++;
+            $lastLine = '';
+        } else {
+            $lastLine = $char . $lastLine;
+        }
+
+        $pos--;
+    }
+
+    if (!empty($lastLine)) {
+        $lines[] = $lastLine;
+    }
+
+    fclose($fp);
+
+    $importantMarkers = ['[ OK ]', '[ INFO ]', '[ ERROR ]', '[ FAIL ]', '[ SUCCESS ]'];
+
+    foreach ($lines as $line) {
+        foreach ($importantMarkers as $marker) {
+            if (strpos($line, $marker) !== false) {
+                return $line;
+            }
+        }
+    }
+
+    return $lines[0] ?? '';
+}
+
+// =============================================================================
+// PREPARE DATA
+// =============================================================================
+
+$statusParts = getCameraStatusData();
+$tunnelUrls = getTunnelUrls();
+$isOnline = isCameraOnline();
+$lastAccess = getLastAccessTime();
+$secondsSince = getSecondsSinceUpdate();
+$latestLog = getLatestLogEntry();
+
+// Read control states
+$monitorStatus = readFileSecure(MONITOR_STATUS_FILE, 'off');
+$webLiveStatus = readFileSecure(WEB_LIVE_STATUS_FILE, 'off');
+
+// Determine if control panel should be visible
+$showControlPanel = ($isOnline && $monitorStatus === 'off');
+
+// =============================================================================
+// HTML OUTPUT
+// =============================================================================
+?>
+
+<div class="glass-panel">
+    <!-- Camera Status Indicator -->
+    <div class="status-container">
+        <div class="status-indicator <?= $isOnline ? 'online' : 'offline' ?>">
+            <?= $isOnline ? 'Connected (Online)' : 'Disconnected (Offline)' ?>
+        </div>
+    </div>
+
+    <!-- System Information Grid -->
+    <div class="data-grid">
+        <div class="data-text">Last access: <?= escapeHtml($lastAccess) ?></div>
+        <div class="data-text">Transmitted data: <?= escapeHtml($statusParts[0]) ?></div>
+    </div>
+
+    <div class="data-grid2">
+        <div class="data-text">Temperature: <?= escapeHtml($statusParts[1]) ?></div>
+        <div class="data-text">Signal: <?= escapeHtml($statusParts[3]) ?></div>
+        <div class="data-text">Latency: <?= escapeHtml($statusParts[2]) ?></div>
+    </div>
+
+    <?php if ($isOnline): ?>
+    <!-- Server Access Buttons -->
+    <div class="server-buttons-container">
+        <?php
+        $serverNames = ['Server 1', 'Server 2', 'Server 3', 'Server 4'];
+
+        foreach ($tunnelUrls as $index => $url) {
+            if ($url !== '') {
+                $safeUrl = escapeHtml($url);
+                $serverName = escapeHtml($serverNames[$index] ?? "Server " . ($index + 1));
+
+                echo '<a class="server-button" href="' . $safeUrl . '/captura.php" '
+                    . 'target="_blank" rel="noopener noreferrer">'
+                    . $serverName . '</a>';
+            }
+        }
+        ?>
+    </div>
+    <?php endif; ?>
+
+    <!-- Control Panel Visibility Control -->
+    <?php if ($showControlPanel): ?>
+        <script>
+        (function() {
+            const form = document.getElementById("myForm");
+            if (form) form.style.display = "block";
+        })();
+        </script>
+    <?php else: ?>
+        <script>
+        (function() {
+            const form = document.getElementById("myForm");
+            if (form) form.style.display = "none";
+        })();
+        </script>
+    <?php endif; ?>
+
+    <!-- Hide image container if camera is offline -->
+    <?php if (!$isOnline): ?>
+        <style>#liveImageContainer, #imageDetails { display: none; }</style>
+    <?php endif; ?>
+
+    <!-- Expose status to JavaScript -->
+    <script>
+    (function() {
+        window.cameraOnlineStatus = <?= $isOnline ? 'true' : 'false' ?>;
+        window.secondsSinceUpdate = <?= $secondsSince ?>;
+    })();
+    </script>
+
+    <!-- Latest Log Entry -->
+    <div class="glass-panel">
+        <div class="log">
+            <?php if ($latestLog !== ''): ?>
+                Log: <?= escapeHtml($latestLog) ?>
+            <?php else: ?>
+                No recent logs available.
+            <?php endif; ?>
+        </div>
+    </div>
+</div>
