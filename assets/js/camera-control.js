@@ -4,11 +4,17 @@
  * Enterprise-grade JavaScript module for camera management interface.
  * Handles live streaming, image capture, status monitoring, and user interactions.
  *
+ * Performance Optimizations:
+ * - Memory leak prevention with automatic cleanup
+ * - Strong cache busting for images (always fresh)
+ * - Optional Page Visibility API (configurable via PHP)
+ * - Automatic cleanup of Image objects
+ *
  * @category  CameraControl
  * @package   Frontend
  * @author    Net Storm
  * @license   Proprietary
- * @version   4.1.0 - Fixed Synchronous XMLHttpRequest warning
+ * @version   5.0.0 - Performance & Memory Optimized
  * @standards ES5+, JSDoc, Clean Code
  *
  * Features:
@@ -18,6 +24,8 @@
  * - Automatic reconnection handling
  * - Offline detection and recovery
  * - Keyboard shortcuts (Space: capture, L: toggle live)
+ * - Memory leak prevention
+ * - Strong cache busting
  *
  * Dependencies:
  * - jQuery 3.7.1+
@@ -40,16 +48,21 @@
      * @type {Object}
      */
     const CONFIG = {
-        CAM: window.CAMERA_NAME || 'Camera', // Set by PHP
-        STATUS_UPDATE_INTERVAL: 2000,        // 2 seconds
-        LIVE_UPDATE_INTERVAL: 1500,          // 1.5 seconds
-        CAPTURE_CHECK_FAST: 25,              // Fast polling for new image (optimized)
-        CAPTURE_CHECK_SLOW: 200,             // Slow polling for new image (optimized)
-        CAPTURE_MAX_ATTEMPTS: 200,           // Max capture polling attempts (increased for faster polling)
-        OFFLINE_THRESHOLD: 7,                // Seconds before considering offline
-        LIVE_ERROR_THRESHOLD: 7,             // Failed attempts before stopping live
-        CAPTURE_RESTORE_DELAY: 500,          // Delay before restarting live after capture
-        LIVE_START_DELAY: 800                // Delay before starting live updates
+        CAM: window.CAMERA_NAME || 'Camera',
+        STATUS_UPDATE_INTERVAL: 2000,
+        LIVE_UPDATE_INTERVAL: 1500,
+        CAPTURE_CHECK_FAST: 25,
+        CAPTURE_CHECK_SLOW: 200,
+        CAPTURE_MAX_ATTEMPTS: 200,
+        OFFLINE_THRESHOLD: 7,
+        LIVE_ERROR_THRESHOLD: 7,
+        CAPTURE_RESTORE_DELAY: 500,
+        LIVE_START_DELAY: 800,
+        // Memory management
+        MAX_IMAGE_OBJECTS: 5,
+        CLEANUP_INTERVAL: 30000, // 30 seconds
+        // Page Visibility (from PHP config)
+        ENABLE_PAGE_VISIBILITY: window.ENABLE_PAGE_VISIBILITY !== false
     };
 
     /**
@@ -75,6 +88,7 @@
         statusInterval: null,
         webLiveInterval: null,
         sessionHeartbeatInterval: null,
+        cleanupInterval: null,
         isLiveActive: false,
         lastOnlineTime: Date.now(),
         wasLiveBeforeOffline: false,
@@ -83,28 +97,131 @@
         currentQuality: null,
         statusRetryCount: 0,
         firstLoad: true,
-        sessionId: null
+        sessionId: null,
+        // Memory management
+        imageObjects: [],
+        isPageVisible: true,
+        lastCacheBuster: 0
     };
+
+    // ========================================================================
+    // MEMORY MANAGEMENT
+    // ========================================================================
+
+    /**
+     * Cleanup old Image objects to prevent memory leaks
+     */
+    function cleanupImageObjects() {
+        if (state.imageObjects.length > CONFIG.MAX_IMAGE_OBJECTS) {
+            const toRemove = state.imageObjects.length - CONFIG.MAX_IMAGE_OBJECTS;
+            const removed = state.imageObjects.splice(0, toRemove);
+
+            removed.forEach(function(img) {
+                if (img) {
+                    img.onload = null;
+                    img.onerror = null;
+                    img.src = '';
+                }
+            });
+
+            console.log(`[${CONFIG.CAM}] 🧹 Cleaned up ${toRemove} old Image objects`);
+        }
+    }
+
+    /**
+     * Create tracked Image object with automatic cleanup
+     */
+    function createTrackedImage() {
+        const img = new Image();
+        state.imageObjects.push(img);
+        cleanupImageObjects();
+        return img;
+    }
+
+    /**
+     * Start periodic memory cleanup
+     */
+    function startMemoryCleanup() {
+        if (state.cleanupInterval) clearInterval(state.cleanupInterval);
+
+        state.cleanupInterval = setInterval(function() {
+            cleanupImageObjects();
+        }, CONFIG.CLEANUP_INTERVAL);
+    }
+
+    /**
+     * Generate strong cache buster
+     * Ensures unique value even if called multiple times in same millisecond
+     */
+    function generateCacheBuster() {
+        const now = Date.now();
+
+        if (now === state.lastCacheBuster) {
+            state.lastCacheBuster = now + 1;
+        } else {
+            state.lastCacheBuster = now;
+        }
+
+        return state.lastCacheBuster + '_' + Math.random().toString(36).substr(2, 9);
+    }
+
+    // ========================================================================
+    // PAGE VISIBILITY API (OPTIONAL)
+    // ========================================================================
+
+    /**
+     * Handle page visibility changes (if enabled)
+     */
+    function handleVisibilityChange() {
+        if (!CONFIG.ENABLE_PAGE_VISIBILITY) return;
+
+        if (document.hidden) {
+            state.isPageVisible = false;
+            console.log(`[${CONFIG.CAM}] 👁️ Page hidden - reducing activity`);
+
+            if (state.isLiveActive && state.webLiveInterval) {
+                clearInterval(state.webLiveInterval);
+                // Slower refresh when hidden
+                state.webLiveInterval = setInterval(updateWebLiveImage, CONFIG.LIVE_UPDATE_INTERVAL * 3);
+            }
+        } else {
+            state.isPageVisible = true;
+            console.log(`[${CONFIG.CAM}] 👁️ Page visible - resuming normal activity`);
+
+            if (state.isLiveActive) {
+                if (state.webLiveInterval) clearInterval(state.webLiveInterval);
+                startLiveUpdates();
+            }
+
+            loadCameraStatus();
+        }
+    }
+
+    /**
+     * Setup Page Visibility API (if enabled)
+     */
+    function setupVisibilityAPI() {
+        if (!CONFIG.ENABLE_PAGE_VISIBILITY) return;
+
+        if (typeof document.hidden !== 'undefined') {
+            document.addEventListener('visibilitychange', handleVisibilityChange);
+        }
+    }
 
     // ========================================================================
     // INITIALIZATION
     // ========================================================================
 
-    /**
-     * Initialize application on document ready
-     */
     $(document).ready(function() {
         initializeApp();
         setupEventHandlers();
         startStatusMonitoring();
         setupCleanupOnExit();
+        setupVisibilityAPI();
+        startMemoryCleanup();
     });
 
-    /**
-     * Initialize application state and load initial data
-     */
     function initializeApp() {
-        // Force all AJAX requests to be asynchronous
         $.ajaxPrefilter(function(options) {
             options.async = true;
             options.cache = false;
@@ -113,7 +230,6 @@
             }
         });
 
-        // Check server-side live stream state on page load
         $.ajax({
             url: 'tmp/web_live.tmp',
             type: 'GET',
@@ -131,33 +247,23 @@
             }
         });
 
-        // Load initial camera status
         loadCameraStatus();
     }
 
-    /**
-     * Setup all event handlers
-     */
     function setupEventHandlers() {
         setupKeyboardShortcuts();
         setupButtonHandlers();
     }
 
-    /**
-     * Setup keyboard shortcuts
-     */
     function setupKeyboardShortcuts() {
         $(document).keydown(function(e) {
-            // Ignore if typing in input fields
             if ($(e.target).is('input, textarea, select')) return;
 
-            // Space key: Capture image
             if (e.keyCode === 32) {
                 e.preventDefault();
                 $('#myBut').click();
             }
 
-            // L key: Toggle live stream
             if (e.keyCode === 76) {
                 const currentState = $('#webLiveSelect').val();
                 const newState = currentState === 'on' ? 'off' : 'on';
@@ -166,11 +272,7 @@
         });
     }
 
-    /**
-     * Setup button click handlers
-     */
     function setupButtonHandlers() {
-        // Reboot button
         $('#rebootButton').click(function() {
             if (confirm('Are you sure you want to reboot the camera?')) {
                 const $button = $(this);
@@ -191,7 +293,6 @@
             }
         });
 
-        // Shutdown button
         $('#shutdownButton').click(function() {
             const message = 'If you turn off the camera, it will not work unless you turn it off and then on again via the switch.\nAre you sure?';
             if (confirm(message)) {
@@ -213,22 +314,27 @@
             }
         });
 
-        // Clear files button
         $('#clearFilesButton').click(function() {
             window.location.href = 'admin/clear.php';
         });
     }
 
-    /**
-     * Setup cleanup handler for page exit
-     */
     function setupCleanupOnExit() {
         $(window).on('beforeunload', function() {
-            // Clear intervals
             if (state.statusInterval) clearInterval(state.statusInterval);
             if (state.webLiveInterval) clearInterval(state.webLiveInterval);
+            if (state.sessionHeartbeatInterval) clearInterval(state.sessionHeartbeatInterval);
+            if (state.cleanupInterval) clearInterval(state.cleanupInterval);
 
-            // Turn off live stream on server
+            state.imageObjects.forEach(function(img) {
+                if (img) {
+                    img.onload = null;
+                    img.onerror = null;
+                    img.src = '';
+                }
+            });
+            state.imageObjects = [];
+
             if (state.isLiveActive) {
                 $.post('index.php', {
                     action: 'write',
@@ -243,11 +349,6 @@
     // STATUS MONITORING
     // ========================================================================
 
-    /**
-     * Check session conflict - Mutual Exclusion (Two-Way Switch)
-     * If another client/server opened live stream → stop our stream
-     * This prevents multiple simultaneous streams (Pi can't handle it)
-     */
     function checkSessionConflict() {
         if (!state.isLiveActive) return;
 
@@ -258,50 +359,40 @@
             timeout: 3000,
             success: function(data) {
                 const trimmed = $.trim(data);
-                if (!trimmed) return; // Empty file - no session
+                if (!trimmed) return;
 
                 const parts = trimmed.split(':');
                 const sessionTimestamp = parseInt(parts[0]) || 0;
                 const sessionId = parts[1] || '';
 
-                // Check if session belongs to another client
                 if (sessionId && sessionId !== state.sessionId) {
                     const now = Date.now();
                     const age = now - sessionTimestamp;
 
                     if (age < 30000) {
-                        console.log(`[${CONFIG.CAM}] Live stream opened elsewhere - stopping here (session conflict)`);
-
+                        console.log(`[${CONFIG.CAM}] Live stream opened elsewhere - stopping here`);
                         $('#webLiveSelect').val('off');
                         stopLiveStream();
                     }
                 }
             },
-            error: function() {
-                // Session file missing or unreachable - continue
-            }
+            error: function() {}
         });
     }
 
-    /**
-     * Start periodic status monitoring
-     */
     function startStatusMonitoring() {
         if (state.statusInterval) clearInterval(state.statusInterval);
 
         state.statusInterval = setInterval(function() {
             loadCameraStatus();
             checkBrowserConnection();
-            checkSessionConflict(); // Mutual Exclusion - Two-Way Switch
+            checkSessionConflict();
         }, CONFIG.STATUS_UPDATE_INTERVAL);
     }
 
-    /**
-     * Load and display camera status
-     */
     function loadCameraStatus() {
         $.ajax({
-            url: 'mode.php?t=' + Date.now(),
+            url: 'mode.php?t=' + generateCacheBuster(),
             type: 'GET',
             async: true,
             cache: false,
@@ -332,19 +423,14 @@
         });
     }
 
-    /**
-     * Manage live stream based on camera online/offline status
-     */
     function manageLiveStreamBasedOnStatus() {
         const isOnline = window.cameraOnlineStatus || false;
         const secondsSince = window.secondsSinceUpdate || 999;
         const now = Date.now();
 
         if (isOnline && secondsSince <= CONFIG.OFFLINE_THRESHOLD) {
-            // Camera is online
             state.lastOnlineTime = now;
 
-            // Restart live stream if it was active before going offline
             if (state.wasLiveBeforeOffline && !state.isLiveActive) {
                 console.log(`[${CONFIG.CAM}] 🔄 Camera back online - restarting live stream`);
                 state.wasLiveBeforeOffline = false;
@@ -352,20 +438,16 @@
                 startLiveStream();
             }
         } else {
-            // Camera is offline or connection lost
             const offlineTime = (now - state.lastOnlineTime) / 1000;
 
             if (offlineTime > CONFIG.OFFLINE_THRESHOLD && state.isLiveActive) {
-                console.log(`[${CONFIG.CAM}] ⏸️ Camera offline for ${offlineTime.toFixed(0)}s - stopping live stream`);
+                console.log(`[${CONFIG.CAM}] ⏸️ Camera offline for ${offlineTime.toFixed(0)}s`);
                 state.wasLiveBeforeOffline = true;
                 stopLiveStreamSilent();
             }
         }
     }
 
-    /**
-     * Check browser internet connection
-     */
     function checkBrowserConnection() {
         if (!window.navigator.onLine) {
             alert('Web browser without internet connection\n\nTry to:\nCheck network cables, modem and router\nReconnect to a Wi-Fi network');
@@ -376,23 +458,18 @@
     // IMAGE CAPTURE
     // ========================================================================
 
-    /**
-     * Capture image from camera
-     * Global function exposed for onclick handlers
-     */
     window.captureImage = function() {
         if (state.captureLock) {
-            console.log(`[${CONFIG.CAM}] ⚠️ captureImage() ignored: capture already in progress`);
+            console.log(`[${CONFIG.CAM}] ⚠️ Capture already in progress`);
             return;
         }
 
         const currentLiveState = $('#webLiveSelect').val();
         let wasLiveActive = false;
 
-        // CRITICAL: Stop live stream BEFORE capture to avoid camera resource conflict
         if (currentLiveState === 'on' && state.isLiveActive) {
             wasLiveActive = true;
-            console.log(`[${CONFIG.CAM}] 🛑 Stopping live stream for capture...`);
+            console.log(`[${CONFIG.CAM}] 🛑 Stopping live for capture`);
             state.isLiveActive = false;
             if (state.webLiveInterval) clearInterval(state.webLiveInterval);
             $('#webLiveSelect').val('off');
@@ -403,7 +480,6 @@
             });
         }
 
-        // Lock capture to prevent concurrent requests
         state.captureLock = true;
         const $button = $('#myBut');
         const originalText = $button.text();
@@ -411,7 +487,6 @@
 
         const beforeCaptureTime = Date.now() / 1000;
 
-        // Collect camera settings from form
         const formData = {
             res: $('select[name="res"]').val(),
             comp: $('select[name="comp"]').val(),
@@ -424,11 +499,9 @@
             submit: 'submit'
         };
 
-        // Send capture request
         $.post('index.php', formData)
             .done(function(response) {
                 if (response === 'BUSY') {
-                    console.warn(`[${CONFIG.CAM}] ⚠️ Server responded BUSY`);
                     resetCaptureButton($button, originalText);
                     restoreLiveStreamIfNeeded(wasLiveActive);
                     alert('Camera is busy. Please wait and try again.');
@@ -437,46 +510,34 @@
                 checkForNewImage($button, originalText, beforeCaptureTime, 0, wasLiveActive);
             })
             .fail(function(error) {
-                console.error(`[${CONFIG.CAM}] ❌ Capture POST failed:`, error);
+                console.error(`[${CONFIG.CAM}] ❌ Capture failed:`, error);
                 resetCaptureButton($button, originalText);
                 restoreLiveStreamIfNeeded(wasLiveActive);
                 alert('Failed to capture image. Please try again.');
             });
     };
 
-    /**
-     * Check for new captured image (recursive polling)
-     *
-     * @param {jQuery} $button - Capture button element
-     * @param {string} originalText - Original button text
-     * @param {number} beforeCaptureTime - Timestamp before capture started
-     * @param {number} attempts - Current attempt number
-     * @param {boolean} wasLiveActive - Whether live stream was active before capture
-     */
     function checkForNewImage($button, originalText, beforeCaptureTime, attempts, wasLiveActive) {
         if (attempts >= CONFIG.CAPTURE_MAX_ATTEMPTS) {
-            console.warn(`[${CONFIG.CAM}] ⏱️ Timeout after ${attempts} attempts`);
             resetCaptureButton($button, originalText);
             restoreLiveStreamIfNeeded(wasLiveActive);
-            alert('Image capture timed out. The Camera may be busy or offline. Please try again.');
+            alert('Image capture timed out. The Camera may be busy or offline.');
             return;
         }
 
-        $.get('index.php?check_new_image&t=' + Date.now())
+        $.get('index.php?check_new_image&t=' + generateCacheBuster())
             .done(function(data) {
                 if (data !== '0') {
                     const imageTimestamp = parseInt(data, 10);
 
                     if (imageTimestamp > beforeCaptureTime) {
                         const captureTime = (imageTimestamp - beforeCaptureTime).toFixed(2);
-                        console.log(`[${CONFIG.CAM}] ✅ Image received in ${captureTime}s (timestamp: ${imageTimestamp})`);
+                        console.log(`[${CONFIG.CAM}] ✅ Image received in ${captureTime}s`);
 
                         displayNewImage(imageTimestamp, captureTime);
                         resetCaptureButton($button, originalText);
 
-                        // Restore live stream AFTER image is received
                         if (wasLiveActive) {
-                            console.log(`[${CONFIG.CAM}] ▶️ Restarting live stream...`);
                             setTimeout(function() {
                                 $('#webLiveSelect').val('on');
                                 toggleWebLive();
@@ -500,21 +561,11 @@
             });
     }
 
-    /**
-     * Display newly captured image
-     *
-     * @param {number} timestamp - Image timestamp for cache busting
-     * @param {string} captureTime - Total capture time in seconds
-     */
     function displayNewImage(timestamp, captureTime) {
-        // Generate unique cache buster
-        const cacheBuster = timestamp + '_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
-
-        // Check if containers already exist
+        const cacheBuster = timestamp + '_' + generateCacheBuster();
         const isUpdate = $('#ImageContainer').length > 0;
 
         if (!isUpdate) {
-            // Create new containers
             const $imageContainer = $(`
                 <div id="ImageContainer" class="glass-panel">
                     <img id="Image" alt="Captured Image" loading="eager" class="captured-image">
@@ -524,15 +575,12 @@
                 </div>
             `);
 
-            // Insert after form panel
             $('form').closest('.glass-panel').after($imageContainer);
         } else {
-            // Update existing containers
             $('#imageSizeText').html('<p class="image-size-text">Loading image size...</p>');
         }
 
-        // Preload image with retry mechanism
-        const newImage = new Image();
+        const newImage = createTrackedImage();
         let retryCount = 0;
         const maxRetries = 3;
 
@@ -540,18 +588,17 @@
             $('#Image').attr('src', this.src);
             $('#ImageContainer, #imageDetails').fadeIn('fast');
 
-            // Fetch and display image size + capture time
-            $.get('index.php?get_image_size=1&t=' + Date.now())
+            $.get('index.php?get_image_size=1&t=' + generateCacheBuster())
                 .done(function(sizeData) {
                     $('#imageSizeText').addClass('data-text').html(
                         'Image size: ' + sizeData +
-                        ' <span class="capture-time">' +'Time: ' + captureTime + 's</span>'
+                        ' <span class="capture-time">Time: ' + captureTime + 's</span>'
                     );
                 })
                 .fail(function() {
                     $('#imageSizeText').html(
                         'Image size: Unknown' +
-                        ' <span class="capture-time">' +'Time: ' + captureTime + 's</span>'
+                        ' <span class="capture-time">Time: ' + captureTime + 's</span>'
                     );
                 });
         };
@@ -561,7 +608,7 @@
             if (retryCount <= maxRetries) {
                 $('#imageSizeText').text('Loading image... (' + retryCount + '/' + maxRetries + ')');
                 setTimeout(function() {
-                    newImage.src = 'pic.jpg?v=' + Date.now() + '_retry' + retryCount;
+                    newImage.src = 'pic.jpg?v=' + generateCacheBuster() + '_retry' + retryCount;
                 }, 1000);
             } else {
                 $('#imageSizeText').text('Error: Could not load image');
@@ -571,22 +618,11 @@
         newImage.src = 'pic.jpg?v=' + cacheBuster;
     }
 
-    /**
-     * Reset capture button to original state
-     *
-     * @param {jQuery} $button - Button element
-     * @param {string} originalText - Original button text
-     */
     function resetCaptureButton($button, originalText) {
         state.captureLock = false;
         $button.prop('disabled', false).text(originalText).removeClass('blinking');
     }
 
-    /**
-     * Restore live stream if it was active before capture
-     *
-     * @param {boolean} wasLiveActive - Whether live was active
-     */
     function restoreLiveStreamIfNeeded(wasLiveActive) {
         if (wasLiveActive) {
             $('#webLiveSelect').val('on');
@@ -598,10 +634,6 @@
     // LIVE STREAM MANAGEMENT
     // ========================================================================
 
-    /**
-     * Toggle live stream on/off
-     * Global function exposed for onchange handlers
-     */
     window.toggleWebLive = function() {
         const selectedState = $('#webLiveSelect').val();
         if (selectedState === 'on') {
@@ -611,9 +643,6 @@
         }
     };
 
-    /**
-     * Send session heartbeat
-     */
     function sendSessionHeartbeat() {
         if (!state.isLiveActive || !state.sessionId) return;
         const timestamp = Date.now();
@@ -621,9 +650,6 @@
         $.post('index.php', {action: 'write', file: 'tmp/web_live_session.tmp', data: data});
     }
 
-    /**
-     * Start session heartbeat
-     */
     function startSessionHeartbeat() {
         state.sessionId = Date.now() + '_' + Math.random().toString(36).substr(2, 9);
         sendSessionHeartbeat();
@@ -631,9 +657,6 @@
         state.sessionHeartbeatInterval = setInterval(sendSessionHeartbeat, 10000);
     }
 
-    /**
-     * Stop session heartbeat
-     */
     function stopSessionHeartbeat() {
         if (state.sessionHeartbeatInterval) {
             clearInterval(state.sessionHeartbeatInterval);
@@ -642,9 +665,6 @@
         state.sessionId = null;
     }
 
-    /**
-     * Start live video streaming
-     */
     function startLiveStream() {
         console.log(`[${CONFIG.CAM}] 🎥 Starting live stream...`);
         state.isLiveActive = true;
@@ -652,7 +672,6 @@
         $('#webLiveContainer').fadeIn();
         $('#webLiveImage').attr('src', 'buffer.jpg');
 
-        // Show loading indicator
         if (!$('#loadingIndicator').length) {
             $('#liveFeed').append(
                 '<div id="loadingIndicator" class="loading-overlay">' +
@@ -662,14 +681,11 @@
             );
         }
 
-        // Restore saved quality preference
         const savedQuality = localStorage.getItem('preferredQuality');
         $('#liveQuality').val(savedQuality || 'very-low');
 
-        // Update quality settings (no spam if unchanged)
         updateLiveQuality(false);
 
-        // Send live stream start signal to server
         $.post('index.php', {
             action: 'write',
             file: 'tmp/web_live.tmp',
@@ -683,23 +699,18 @@
                     startLiveUpdates();
                 }, CONFIG.LIVE_START_DELAY);
             } else {
-                console.error(`[${CONFIG.CAM}] ❌ Failed to start: ${response}`);
                 $('#loadingIndicator').remove();
                 alert('Failed to start live stream: ' + response);
             }
         })
         .fail(function(xhr, status, error) {
-            console.error(`[${CONFIG.CAM}] ❌ Failed to start: ${error}`);
             $('#loadingIndicator').remove();
             alert('Failed to start live stream: ' + error);
         });
     }
 
-    /**
-     * Stop live stream (user action)
-     */
     function stopLiveStream() {
-        console.log(`[${CONFIG.CAM}] ⏹️ Live stream OFF (user stopped)`);
+        console.log(`[${CONFIG.CAM}] ⏹️ Live stream OFF`);
         state.isLiveActive = false;
         stopSessionHeartbeat();
         if (state.webLiveInterval) clearInterval(state.webLiveInterval);
@@ -713,11 +724,8 @@
         });
     }
 
-    /**
-     * Stop live stream silently (auto-stop due to connection loss)
-     */
     function stopLiveStreamSilent() {
-        console.log(`[${CONFIG.CAM}] ⏸️ Live stream paused (connection timeout)`);
+        console.log(`[${CONFIG.CAM}] ⏸️ Live stream paused`);
         state.isLiveActive = false;
         stopSessionHeartbeat();
         if (state.webLiveInterval) clearInterval(state.webLiveInterval);
@@ -725,16 +733,11 @@
         $('#loadingIndicator').remove();
     }
 
-    /**
-     * Start periodic live image updates
-     */
     function startLiveUpdates() {
         if (state.webLiveInterval) clearInterval(state.webLiveInterval);
 
-        // Initial update
         updateWebLiveImage();
 
-        // Periodic updates
         state.webLiveInterval = setInterval(function() {
             if (state.isLiveActive && $('#webLiveSelect').val() === 'on') {
                 updateWebLiveImage();
@@ -745,21 +748,16 @@
         }, CONFIG.LIVE_UPDATE_INTERVAL);
     }
 
-    /**
-     * Update live stream image
-     */
     function updateWebLiveImage() {
-        // Safety check: ensure live is still active
         if ($('#webLiveSelect').val() !== 'on' || !state.isLiveActive) {
             return;
         }
 
-        const img = new Image();
+        const img = createTrackedImage();
 
         img.onload = function() {
             $('#webLiveImage').attr('src', this.src);
 
-            // Reset error counter on success
             if (state.liveErrorCount > 0) {
                 console.log(`[${CONFIG.CAM}] ✅ Live stream recovered`);
                 state.liveErrorCount = 0;
@@ -768,25 +766,18 @@
 
         img.onerror = function() {
             state.liveErrorCount++;
-            console.warn(`[${CONFIG.CAM}] ⚠️ Live image load failed (attempt ${state.liveErrorCount})`);
+            console.warn(`[${CONFIG.CAM}] ⚠️ Live image load failed (${state.liveErrorCount})`);
 
-            // Stop after too many failures
             if (state.liveErrorCount >= CONFIG.LIVE_ERROR_THRESHOLD) {
-                console.error(`[${CONFIG.CAM}] ❌ Live stream timeout - stopping after ${CONFIG.LIVE_ERROR_THRESHOLD} failed attempts`);
+                console.error(`[${CONFIG.CAM}] ❌ Live stream timeout`);
                 stopLiveStreamSilent();
                 state.liveErrorCount = 0;
             }
         };
 
-        img.src = 'live.jpg?' + Date.now();
+        img.src = 'live.jpg?v=' + generateCacheBuster();
     }
 
-    /**
-     * Update live stream quality
-     * Global function exposed for onchange handlers
-     *
-     * @param {boolean} forceUpdate - Force quality update even if unchanged
-     */
     window.updateLiveQuality = function(forceUpdate) {
         const quality = $('#liveQuality').val();
         const preset = QUALITY_PRESETS[quality] || QUALITY_PRESETS['very-low'];
@@ -795,7 +786,6 @@
         const qualityValue = preset[2];
         const data = width + ' ' + height + ' ' + qualityValue;
 
-        // Skip update if quality hasn't changed and not forced
         if (!forceUpdate && state.currentQuality === data) {
             return;
         }
@@ -810,9 +800,8 @@
         })
         .done(function(response) {
             if (response.trim() === 'OK') {
-                console.log(`[${CONFIG.CAM}] ✅ Quality set: ${width}x${height} q=${qualityValue}`);
+                console.log(`[${CONFIG.CAM}] ✅ Quality: ${width}x${height} q=${qualityValue}`);
 
-                // Restart live feed if quality was changed manually
                 if (forceUpdate && state.webLiveInterval && state.isLiveActive) {
                     setTimeout(function() {
                         $('#webLiveImage').attr('src', 'buffer.jpg');
@@ -821,8 +810,6 @@
                         }, 500);
                     }, 500);
                 }
-            } else {
-                console.error(`[${CONFIG.CAM}] ❌ Server response: ${response}`);
             }
         })
         .fail(function(xhr, status, error) {
