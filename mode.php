@@ -142,61 +142,75 @@ function getSecondsSinceUpdate(): int
 }
 
 /**
- * Retrieve latest relevant log entry
+ * Retrieve latest relevant log entry (optimized)
  *
  * @return string Latest log entry or empty string
  */
 function getLatestLogEntry(): string
 {
+    static $cachedEntry = null;
+    static $cacheTime = 0;
+
+    // Cache for 2 seconds to reduce file I/O
+    if ($cachedEntry !== null && (time() - $cacheTime) < 2) {
+        return $cachedEntry;
+    }
+
     if (!file_exists(MAIN_LOG_FILE) || !is_readable(MAIN_LOG_FILE)) {
         return '';
     }
 
-    $maxLines = 50;
-    $lines = [];
+    $fileSize = filesize(MAIN_LOG_FILE);
+    if ($fileSize === false || $fileSize === 0) {
+        return '';
+    }
+
+    // Read only last 8KB for performance
+    $readSize = min($fileSize, 8192);
     $fp = fopen(MAIN_LOG_FILE, 'r');
 
     if ($fp === false) {
         return '';
     }
 
-    fseek($fp, -1, SEEK_END);
-    $pos = ftell($fp);
-    $lastLine = '';
-    $lineCount = 0;
-
-    while ($pos > 0 && $lineCount < $maxLines) {
-        fseek($fp, $pos, SEEK_SET);
-        $char = fgetc($fp);
-
-        if ($char === "\n" && !empty($lastLine)) {
-            $lines[] = $lastLine;
-            $lineCount++;
-            $lastLine = '';
-        } else {
-            $lastLine = $char . $lastLine;
-        }
-
-        $pos--;
-    }
-
-    if (!empty($lastLine)) {
-        $lines[] = $lastLine;
-    }
-
+    // Seek to near end of file
+    fseek($fp, -$readSize, SEEK_END);
+    $content = fread($fp, $readSize);
     fclose($fp);
 
+    if ($content === false) {
+        return '';
+    }
+
+    // Split into lines (reverse order for latest first)
+    $lines = array_reverse(explode("\n", $content));
     $importantMarkers = ['[ OK ]', '[ INFO ]', '[ ERROR ]', '[ FAIL ]', '[ SUCCESS ]'];
 
+    // Find first important log entry
     foreach ($lines as $line) {
+        if (empty($line)) {
+            continue;
+        }
+
         foreach ($importantMarkers as $marker) {
             if (strpos($line, $marker) !== false) {
+                $cachedEntry = $line;
+                $cacheTime = time();
                 return $line;
             }
         }
     }
 
-    return $lines[0] ?? '';
+    // Return first non-empty line if no important marker found
+    foreach ($lines as $line) {
+        if (!empty(trim($line))) {
+            $cachedEntry = $line;
+            $cacheTime = time();
+            return $line;
+        }
+    }
+
+    return '';
 }
 
 // =============================================================================

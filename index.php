@@ -32,7 +32,16 @@ require_once __DIR__ . '/includes/utilities.php';
 sendNoCacheHeaders();
 
 // Security: Generate admin token for button protection
-session_start();
+// Session options for enhanced security (from app-config.php settings)
+if (session_status() === PHP_SESSION_NONE) {
+    session_start([
+        'cookie_httponly' => true,
+        'cookie_samesite' => 'Strict',
+        'use_strict_mode' => true,
+        'use_only_cookies' => true
+    ]);
+}
+
 if (!isset($_SESSION['admin_token'])) {
     $_SESSION['admin_token'] = bin2hex(random_bytes(32));
 }

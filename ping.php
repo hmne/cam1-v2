@@ -32,32 +32,30 @@ if (isset($_GET['stats_only'])) {
 $lines = sanitizeInteger($_GET['lines'] ?? 200, 1, 1000, 200);
 
 /**
- * Get status color based on message content
+ * Get status color based on message content (optimized)
  *
  * @param string $message Log message
  * @return string Color hex code
  */
 function get_status_color(string $message): string
 {
-    if (stripos($message, 'Internet OK') !== false || 
-        stripos($message, 'Excellent') !== false || 
-        stripos($message, 'Very Good') !== false) {
-        return '#4CAF50'; // Green
+    static $patterns = [
+        '#4CAF50' => ['Internet OK', 'Excellent', 'Very Good'],     // Green
+        '#8BC34A' => ['Good'],                                      // Light Green
+        '#FFC107' => ['Regular'],                                   // Amber
+        '#F44336' => ['Bad', 'Fail Internet', 'ERROR', 'FAIL']     // Red
+    ];
+
+    $messageLower = strtolower($message);
+
+    foreach ($patterns as $color => $keywords) {
+        foreach ($keywords as $keyword) {
+            if (stripos($messageLower, strtolower($keyword)) !== false) {
+                return $color;
+            }
+        }
     }
-    
-    if (stripos($message, 'Good') !== false) {
-        return '#8BC34A'; // Light Green
-    }
-    
-    if (stripos($message, 'Regular') !== false) {
-        return '#FFC107'; // Amber
-    }
-    
-    if (stripos($message, 'Bad') !== false || 
-        stripos($message, 'Fail Internet') !== false) {
-        return '#F44336'; // Red
-    }
-    
+
     return '#607D8B'; // Default Blue Grey
 }
 

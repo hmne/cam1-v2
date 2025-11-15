@@ -20,22 +20,42 @@ declare(strict_types=1);
 // CONSTANTS
 // =============================================================================
 
-if (!defined('MAX_FILE_SIZE')) define('MAX_FILE_SIZE', 1048576); // 1MB
-if (!defined('MAX_UPLOAD_SIZE')) define('MAX_UPLOAD_SIZE', 80000000); // 80MB
-if (!defined('ERROR_LOG_FILE')) define('ERROR_LOG_FILE', __DIR__ . '/../log/php_errors.log');
-if (!defined('LOCK_TIMEOUT_SECONDS')) define('LOCK_TIMEOUT_SECONDS', 5);
-if (!defined('LOCK_RETRY_MICROSECONDS')) define('LOCK_RETRY_MICROSECONDS', 100000);
+if (!defined('MAX_FILE_SIZE')) {
+    define('MAX_FILE_SIZE', 1048576); // 1MB
+}
+if (!defined('MAX_UPLOAD_SIZE')) {
+    define('MAX_UPLOAD_SIZE', 80000000); // 80MB
+}
+if (!defined('ERROR_LOG_FILE')) {
+    define('ERROR_LOG_FILE', __DIR__ . '/../log/php_errors.log');
+}
+if (!defined('LOCK_TIMEOUT_SECONDS')) {
+    define('LOCK_TIMEOUT_SECONDS', 5);
+}
+if (!defined('LOCK_RETRY_MICROSECONDS')) {
+    define('LOCK_RETRY_MICROSECONDS', 100000);
+}
+
+// =============================================================================
+// FILE CACHE (Performance optimization for frequently read files)
+// =============================================================================
+
+/**
+ * @var array<string, array{data: string, time: int}> Simple file cache
+ */
+$_file_cache = [];
+$_cache_ttl = 2; // seconds
 
 // =============================================================================
 // LOGGING FUNCTIONS
 // =============================================================================
 
 /**
- * Log error message with timestamp and context
+ * Log error message with timestamp and context (thread-safe)
  *
- * @param string $message Error message to log
- * @param string $level   Log level (ERROR, WARNING, INFO, DEBUG)
- * @param array  $context Additional context data
+ * @param string               $message Error message to log
+ * @param string               $level   Log level (ERROR, WARNING, INFO, DEBUG)
+ * @param array<string, mixed> $context Additional context data
  *
  * @return void
  */
@@ -43,16 +63,28 @@ function logMessage(string $message, string $level = 'ERROR', array $context = [
 {
     $logDir = dirname(ERROR_LOG_FILE);
     if (!is_dir($logDir)) {
-        mkdir($logDir, 0755, true);
+        @mkdir($logDir, 0755, true);
     }
 
     $timestamp = date('d/m/Y h:i:s A');
     $ip = filter_var($_SERVER['REMOTE_ADDR'] ?? '', FILTER_VALIDATE_IP) ?: 'unknown';
 
-    $contextStr = !empty($context) ? ' | Context: ' . json_encode($context) : '';
+    $contextStr = !empty($context) ? ' | Context: ' . json_encode($context, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) : '';
     $logEntry = sprintf("[%s] [%s] [IP:%s] %s%s\n", $timestamp, $level, $ip, $message, $contextStr);
 
-    error_log($logEntry, 3, ERROR_LOG_FILE);
+    // Thread-safe logging with file locking
+    $fp = @fopen(ERROR_LOG_FILE, 'a');
+    if ($fp !== false) {
+        if (flock($fp, LOCK_EX)) {
+            fwrite($fp, $logEntry);
+            fflush($fp);
+            flock($fp, LOCK_UN);
+        }
+        fclose($fp);
+    } else {
+        // Fallback to error_log if file operations fail
+        error_log($logEntry, 3, ERROR_LOG_FILE);
+    }
 }
 
 // =============================================================================
@@ -298,7 +330,29 @@ function formatFileSize(int $sizeInBytes): string
  */
 function escapeHtml(string $text): string
 {
-    return htmlspecialchars($text, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+    return htmlspecialchars($text, ENT_QUOTES | ENT_HTML5 | ENT_SUBSTITUTE, 'UTF-8');
+}
+
+/**
+ * Send JSON response with proper headers and encoding
+ *
+ * @param array<string, mixed> $data       Data to encode
+ * @param int                  $statusCode HTTP status code
+ * @param bool                 $exit       Whether to exit after sending
+ *
+ * @return void
+ */
+function sendJsonResponse(array $data, int $statusCode = 200, bool $exit = true): void
+{
+    http_response_code($statusCode);
+    header('Content-Type: application/json; charset=UTF-8');
+    sendNoCacheHeaders();
+
+    echo json_encode($data, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
+
+    if ($exit) {
+        exit;
+    }
 }
 
 // =============================================================================
