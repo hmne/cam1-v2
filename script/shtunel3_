@@ -1,0 +1,180 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+IFS=$'\n\t'
+
+#-------------------------------------------------------------------------------
+# Configuration
+#-------------------------------------------------------------------------------
+
+readonly DEVICE_ID="${DEVICE_ID:-cam1}"
+readonly T_MODE="${T_MODE:-both}"
+readonly BASE_URL="http://netstorm.site/${DEVICE_ID}"
+readonly T_PORT="80"
+readonly S_PORT="22"
+readonly KITE_NAME="nscam.pagekite.me"
+readonly KITE_SECRET="698k2f4xa8cfk7b8a8xx7ffakkefke93"
+
+readonly INSTALL_DIR="/tmp"
+readonly TEMP_DIR="/tmp"
+readonly PAGEKITE_BIN="${INSTALL_DIR}/pagekite.py"
+readonly CONFIG_FILE="${TEMP_DIR}/pagekite.rc"
+readonly URL_FILE="${TEMP_DIR}/url3.tmp"
+readonly LOG_FILE="${TEMP_DIR}/pagekite.log"
+readonly MAX_RETRIES=3
+readonly RETRY_DELAY=2
+readonly TIMEOUT=30
+
+#-------------------------------------------------------------------------------
+# Functions
+#-------------------------------------------------------------------------------
+
+log_message() {
+    local timestamp
+    timestamp=$(TZ=Asia/Kuwait date)
+    echo "$timestamp: $1" | tee -a "$LOG_FILE"
+}
+
+cleanup() {
+    log_message "Cleaning up PageKite processes and files"
+    pkill -f pagekite 2>/dev/null || true
+    rm -f "$URL_FILE" "$CONFIG_FILE"
+    find /tmp -name "pagekite*" -type f -delete 2>/dev/null
+}
+
+install_pagekite() {
+    log_message "Checking PageKite installation"
+
+    if [[ -f $PAGEKITE_BIN ]]; then
+        log_message "Found existing PageKite binary"
+        return 0
+    fi
+
+    log_message "Attempting to download PageKite from custom source"
+    if wget -q "$BASE_URL/downloads/pagekite.py" -O "$PAGEKITE_BIN"; then
+        chmod +x "$PAGEKITE_BIN"
+        log_message "Successfully installed PageKite from custom source"
+        return 0
+    fi
+
+    log_message "Custom source failed, trying official download"
+    if wget -q "https://pagekite.net/pk/pagekite.py" -O "$PAGEKITE_BIN"; then
+        chmod +x "$PAGEKITE_BIN"
+        log_message "Successfully installed PageKite from official source"
+        return 0
+    fi
+
+    log_message "Failed to install PageKite from any source"
+    return 1
+}
+
+create_config() {
+    log_message "Creating PageKite configuration"
+    cat > "$CONFIG_FILE" <<EOF
+###[ Current settings for pagekite.py v1.5.2.201011. ]#########
+## Disable TLS certificate verification entirely
+fe_nocertcheck
+
+##[ Default kite and account details ]##
+kitename   = $KITE_NAME
+kitesecret = $KITE_SECRET
+
+##[ Front-end settings: use pagekite.net defaults ]##
+defaults
+
+##[ Back-ends and local services ]##
+EOF
+
+    if [[ $T_MODE != "ssh" ]]; then
+        echo "service_on  = http:$KITE_NAME:localhost:$T_PORT:$KITE_SECRET" >> "$CONFIG_FILE"
+        log_message "Added HTTP service configuration"
+    fi
+    if [[ $T_MODE != "http" ]]; then
+        echo "service_on  = raw-22:ssh.$KITE_NAME:localhost:$S_PORT:$KITE_SECRET" >> "$CONFIG_FILE"
+        log_message "Added SSH service configuration"
+    fi
+    # إضافة خدمة shell.pagekite.me للوصول إلى shellinabox
+    echo "service_on  = http:shell.$KITE_NAME:localhost:4200:$KITE_SECRET" >> "$CONFIG_FILE"
+    log_message "Added Shell service configuration"
+
+    cat >> "$CONFIG_FILE" <<EOF
+
+##[ Miscellaneous settings ]##
+savefile = $CONFIG_FILE
+max_read_bytes = 16256x3.100
+
+#########[ End of pagekite.py configuration ]#########
+EOF
+    log_message "Configuration file created successfully"
+}
+
+start_tunnel() {
+    local attempt=0
+    cleanup
+
+    if [[ ! -f $PAGEKITE_BIN ]]; then
+        if ! install_pagekite; then
+            log_message "Failed to install PageKite"
+            return 1
+        fi
+    fi
+
+    create_config
+
+    while [[ $attempt -lt $MAX_RETRIES ]]; do
+        log_message "Starting PageKite tunnel (attempt $((attempt + 1)) of $MAX_RETRIES)"
+
+        "$PAGEKITE_BIN" --clean --optfile "$CONFIG_FILE" > "$LOG_FILE" 2>&1 &
+        pagekite_pid=$!
+        log_message "PageKite started with PID: $pagekite_pid"
+
+        local wait_count=0
+        while [[ $wait_count -lt $TIMEOUT ]]; do
+            if ps -p $pagekite_pid > /dev/null; then
+                if [[ $T_MODE != "ssh" ]]; then
+                    echo "http://$KITE_NAME" > "$URL_FILE"
+                    log_message "HTTP tunnel established: http://$KITE_NAME"
+                fi
+                return 0
+            fi
+            sleep 2
+            wait_count=$((wait_count + 1))
+        done
+
+        log_message "Tunnel attempt $((attempt + 1)) failed"
+        cleanup
+        attempt=$((attempt + 1))
+        [[ $attempt -lt $MAX_RETRIES ]] && log_message "Waiting $RETRY_DELAY seconds before retry" && sleep "$RETRY_DELAY"
+    done
+
+    log_message "Failed to establish tunnel after $MAX_RETRIES attempts"
+    return 1
+}
+
+monitor_tunnel() {
+    log_message "Starting tunnel monitoring"
+    while true; do
+        if ! pgrep -f pagekite >/dev/null; then
+            log_message "PageKite process not found, restarting"
+            if ! start_tunnel; then
+                log_message "Failed to restart tunnel"
+            fi
+        fi
+        sleep 30
+    done
+}
+
+#-------------------------------------------------------------------------------
+# Main execution
+#-------------------------------------------------------------------------------
+
+trap cleanup EXIT
+
+# Start tunnel
+if ! start_tunnel; then
+    log_message "ERROR: Server 3 initial startup failed"
+    exit 1
+fi
+
+# Keep tunnel alive
+monitor_tunnel

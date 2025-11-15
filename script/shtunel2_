@@ -1,0 +1,240 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+IFS=$'\n\t'
+
+#-------------------------------------------------------------------------------
+# Configuration
+#-------------------------------------------------------------------------------
+
+readonly DEVICE_ID="${DEVICE_ID:-cam1}"
+readonly T_MODE="${T_MODE:-both}"
+readonly BASE_URL="http://netstorm.site/${DEVICE_ID}"
+readonly MIN_VERSION="3.9.0"
+readonly T_PORT="80"
+readonly S_PORT="22"
+readonly NGROK_TOKEN="2XDXsQpUatqtLsmWL8yvABPBZAc_4Nr3BoxJ51XvXcmZnqxBo"
+
+readonly INSTALL_DIR="/usr/local/bin"
+readonly TEMP_DIR="/tmp"
+readonly URL_FILE="${TEMP_DIR}/url2.tmp"
+readonly SSH_FILE="${TEMP_DIR}/ssh2.tmp"
+readonly CONFIG_FILE="${TEMP_DIR}/ngrok.yml"
+readonly LOG_FILE="${TEMP_DIR}/ngrok.log"
+readonly MAX_RETRIES=3
+readonly RETRY_DELAY=2
+readonly API_URL="http://127.0.0.1:4040/api/tunnels"
+
+#-------------------------------------------------------------------------------
+# Functions
+#-------------------------------------------------------------------------------
+
+log_message() {
+    local timestamp
+    timestamp=$(TZ=Asia/Kuwait date)
+    echo "$timestamp: $1" | tee -a "$LOG_FILE"
+}
+
+cleanup() {
+    log_message "Cleaning up ngrok processes and files..."
+    pkill -f ngrok 2>/dev/null || true
+    rm -f "$URL_FILE" "$SSH_FILE"
+}
+
+version_gt() {
+    test "$(printf '%s\n' "$@" | sort -V | head -n 1)" != "$1"
+}
+
+get_version() {
+    # Pure bash: extract version using regex
+    local version_output
+    version_output=$(ngrok version 2>/dev/null) || { echo "0.0.0"; return; }
+
+    # Extract version pattern after "version" keyword (e.g., version 3.9.0)
+    if [[ $version_output =~ version[[:space:]]+([0-9]+\.[0-9]+\.[0-9]+) ]]; then
+        echo "${BASH_REMATCH[1]}"
+    else
+        echo "0.0.0"
+    fi
+}
+
+install_ngrok() {
+    local current_version
+
+    if command -v ngrok &>/dev/null; then
+        current_version=$(get_version)
+        if ! version_gt "$MIN_VERSION" "$current_version"; then
+            log_message "Current ngrok version $current_version is up to date"
+            return 0
+        fi
+        log_message "Updating ngrok from version $current_version to $MIN_VERSION"
+    else
+        log_message "ngrok not found, installing..."
+    fi
+
+    cd "$TEMP_DIR" || return 1
+
+    log_message "Attempting download from custom source..."
+    if wget -q "$BASE_URL/downloads/ngrok.tgz" -O ngrok.tgz; then
+        tar -xzf ngrok.tgz
+        rm -f ngrok.tgz
+        chmod +x ngrok
+        sudo mv ngrok "$INSTALL_DIR/"
+        log_message "Successfully installed ngrok from custom source"
+        return 0
+    fi
+
+    log_message "Custom source failed, trying official download..."
+    if wget -q "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-arm.tgz" -O ngrok.tgz; then
+        tar -xzf ngrok.tgz
+        rm -f ngrok.tgz
+        chmod +x ngrok
+        sudo mv ngrok "$INSTALL_DIR/"
+        log_message "Successfully installed ngrok from official source"
+        return 0
+    fi
+
+    log_message "Failed to install ngrok from any source"
+    return 1
+}
+
+create_config() {
+    log_message "Creating ngrok configuration..."
+    cat > "$CONFIG_FILE" <<EOF
+version: 2
+authtoken: $NGROK_TOKEN
+region: eu
+tunnels:
+  http:
+    proto: http
+    addr: $T_PORT
+  ssh:
+    proto: tcp
+    addr: $S_PORT
+EOF
+    log_message "Configuration file created"
+}
+
+get_urls() {
+    local attempt=0
+    local success=false
+
+    while [[ $attempt -lt 15 ]]; do
+        if [[ $T_MODE != "tcp" ]]; then
+            # Pure bash: extract HTTPS URL from JSON
+            local api_response http_url=""
+            api_response=$(curl -s "$API_URL" 2>/dev/null)
+
+            while IFS= read -r line; do
+                if [[ $line =~ \"(https://[^\"]+)\" ]]; then
+                    http_url="${BASH_REMATCH[1]}"
+                    break
+                fi
+            done <<< "$api_response"
+
+            if [[ -n $http_url ]]; then
+                echo "$http_url" > "$URL_FILE"
+                log_message "HTTP tunnel URL: $http_url"
+                [[ $T_MODE == "http" ]] && success=true
+            fi
+        fi
+
+        if [[ $T_MODE != "http" ]]; then
+            # Pure bash: extract TCP URL from JSON
+            local api_response tcp_url=""
+            api_response=$(curl -s "$API_URL" 2>/dev/null)
+
+            while IFS= read -r line; do
+                if [[ $line =~ \"(tcp://[^\"]+)\" ]]; then
+                    tcp_url="${BASH_REMATCH[1]}"
+                    break
+                fi
+            done <<< "$api_response"
+
+            if [[ -n $tcp_url ]]; then
+                tcp_details=${tcp_url#tcp://}
+                echo "$tcp_details" > "$SSH_FILE"
+                log_message "SSH tunnel endpoint: $tcp_details"
+                success=true
+            fi
+        fi
+
+        [[ $success == true ]] && return 0
+        sleep 2
+        attempt=$((attempt + 1))
+    done
+
+    log_message "Failed to get tunnel URLs after 30 seconds"
+    return 1
+}
+
+start_tunnel() {
+    local attempt=0
+    cleanup
+    create_config
+
+    while [[ $attempt -lt $MAX_RETRIES ]]; do
+        log_message "Starting ngrok tunnel (attempt $((attempt + 1)) of $MAX_RETRIES)"
+
+        ngrok config upgrade --config "$CONFIG_FILE" &>/dev/null
+        ngrok config upgrade --relocate --config "$CONFIG_FILE" &>/dev/null
+
+        case "$T_MODE" in
+            "http")
+                log_message "Starting HTTP tunnel..."
+                ngrok start http --config "$CONFIG_FILE" & ;;
+            "tcp")
+                log_message "Starting TCP tunnel..."
+                ngrok start ssh --config "$CONFIG_FILE" & ;;
+            "both")
+                log_message "Starting both HTTP and TCP tunnels..."
+                ngrok start --all --config "$CONFIG_FILE" & ;;
+        esac
+
+        ngrok_pid=$!
+        log_message "ngrok started with PID: $ngrok_pid"
+
+        if get_urls; then
+            log_message "Tunnel(s) established successfully"
+            return 0
+        fi
+
+        log_message "Tunnel attempt failed, cleaning up"
+        cleanup
+        attempt=$((attempt + 1))
+        [[ $attempt -lt $MAX_RETRIES ]] && log_message "Waiting $RETRY_DELAY seconds before retry" && sleep "$RETRY_DELAY"
+    done
+
+    log_message "Failed to establish tunnel after $MAX_RETRIES attempts"
+    return 1
+}
+
+monitor_tunnel() {
+    log_message "Starting tunnel monitoring"
+    while true; do
+        if ! pgrep -f ngrok >/dev/null || ! curl -s "$API_URL" &>/dev/null; then
+            log_message "ngrok process or API not responding, restarting..."
+            start_tunnel
+        fi
+        sleep 30
+    done
+}
+
+#-------------------------------------------------------------------------------
+# Main execution
+#-------------------------------------------------------------------------------
+
+trap cleanup EXIT
+
+if ! install_ngrok; then
+    log_message "ERROR: Server 2 installation failed"
+    exit 1
+fi
+
+if ! start_tunnel; then
+    log_message "ERROR: Server 2 failed to start"
+    exit 1
+fi
+
+log_message "Server 2 is running"
+monitor_tunnel

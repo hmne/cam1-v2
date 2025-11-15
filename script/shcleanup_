@@ -1,0 +1,181 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+IFS=$'\n\t'
+
+#-------------------------------------------------------------------------------
+# Configuration
+#-------------------------------------------------------------------------------
+
+readonly DEVICE_ID="${DEVICE_ID:-cam1}"
+readonly BASE_URL="http://netstorm.site/${DEVICE_ID}"
+readonly VERSION="2.0.0"
+
+# Get MAC address for logging
+get_mac_address() {
+    local mac_file="/sys/class/net/wlan0/address"
+    if [[ -r "$mac_file" ]]; then
+        cat "$mac_file"
+    elif command -v ip &>/dev/null; then
+        # Pure bash: extract MAC address using regex
+        local ip_output
+        ip_output=$(ip link show wlan0 2>/dev/null)
+        if [[ $ip_output =~ link/ether[[:space:]]+([0-9a-f:]+) ]]; then
+            echo "${BASH_REMATCH[1]}"
+        else
+            echo "unknown"
+        fi
+    else
+        echo "unknown"
+    fi
+}
+
+MAC_ADDRESS=$(get_mac_address)
+readonly MAC_ADDRESS
+
+#-------------------------------------------------------------------------------
+# Functions
+#-------------------------------------------------------------------------------
+
+# Function to log (web only, no local log file)
+log_message() {
+    # Don't log to web if no_web is specified
+    if [[ ${2:-yes} == "yes" ]]; then
+        log_to_web "CLEANUP" "$1"
+    fi
+}
+
+# Function to log to website with retry
+log_to_web() {
+    local status="$1"
+    local message="$2"
+    local timestamp
+    timestamp=$(TZ=Asia/Kuwait date)
+    local log_data="[ $status ] $message | Device: $MAC_ADDRESS | $timestamp"
+    local attempt=0
+
+    while ((attempt < 2)); do
+        if curl --silent --data "file=log/log.txt&data=$log_data" "$BASE_URL/storage.php" -m 5; then
+            # Also update status.tmp on server to show last activity
+            local unix_time
+            printf -v unix_time '%(%s)T' -1
+            curl --silent --data "file=tmp/status.tmp&data=active $unix_time" "$BASE_URL/storage.php" -m 1 &>/dev/null
+            return 0
+        fi
+        ((attempt++))
+        sleep 1
+    done
+
+    return 1
+}
+
+# Function to clean up duplicate files (using mapfile)
+cleanup_duplicates() {
+    local dir="$1"
+    local pattern="$2"
+
+    if [[ -d $dir ]]; then
+        local -a dup_files
+        mapfile -t dup_files < <(find "$dir" -type f -name "${pattern}.*[0-9]")
+        local count=${#dup_files[@]}
+        if [[ $count -gt 0 ]]; then
+            log_message "Cleaning up $count duplicate files in $dir matching $pattern" "no"
+            find "$dir" -type f -name "${pattern}.*[0-9]" -delete
+        else
+            log_message "No duplicate files found in $dir matching $pattern" "no"
+        fi
+    else
+        log_message "Directory $dir does not exist, skipping duplicate cleanup" "no"
+    fi
+}
+
+#-------------------------------------------------------------------------------
+# Main cleanup operations
+#-------------------------------------------------------------------------------
+
+# Start cleanup operations
+log_message "Starting cleanup operations" "yes"
+
+# Safe cleanup of temporary files
+log_message "Cleaning temporary files" "no"
+find /tmp -name "*.tmp" -type f -mtime +7 -delete
+find /tmp -name "*.log" -type f -mtime +7 -delete
+
+# Clean up duplicate files in /var/www/html
+cleanup_duplicates "/var/www/html" "*.jpg"
+cleanup_duplicates "/var/www/html" "*.css"
+cleanup_duplicates "/var/www/html" "*.js"
+cleanup_duplicates "/var/www/html" "*.ico"
+
+# Check disk space
+# Pure bash: extract disk usage percentage
+get_disk_usage() {
+    local df_output line_count=0 usage_line
+    df_output=$(df -h /)
+    while IFS= read -r line; do
+        ((line_count++))
+        if [[ $line_count -eq 2 ]]; then
+            usage_line="$line"
+            break
+        fi
+    done <<< "$df_output"
+
+    # Extract 5th field (Usage%) and remove % sign
+    local fields=($usage_line)
+    local usage="${fields[4]}"
+    echo "${usage%\%}"
+}
+
+DISK_USAGE=$(get_disk_usage)
+if [[ $DISK_USAGE -gt 80 ]]; then
+    log_message "Disk usage high ($DISK_USAGE%), performing additional cleanup" "yes"
+
+    # Find and remove large files
+    log_message "Removing large files over 10MB older than 3 days" "no"
+    find /tmp -type f -size +10M -mtime +3 -delete
+
+    # System cleanup
+    log_message "Cleaning system logs" "no"
+    sudo journalctl --vacuum-time=2d
+
+    # Clear package cache
+    log_message "Clearing apt cache" "no"
+    sudo apt-get clean
+
+    # New disk usage after cleanup
+    NEW_DISK_USAGE=$(get_disk_usage)
+    log_message "Disk usage after cleanup: $NEW_DISK_USAGE%" "yes"
+else
+    log_message "Disk usage normal ($DISK_USAGE%), no additional cleanup needed" "no"
+fi
+
+# Check for broken symlinks (using mapfile for efficiency)
+log_message "Checking for broken symlinks" "no"
+mapfile -t BROKEN_LINK_LIST < <(find /var/www/html -type l -xtype l)
+BROKEN_LINKS=${#BROKEN_LINK_LIST[@]}
+if [[ $BROKEN_LINKS -gt 0 ]]; then
+    log_message "Found $BROKEN_LINKS broken symlinks, removing" "yes"
+    find /var/www/html -type l -xtype l -delete
+fi
+
+# Check for running processes and restart if needed (parallel processing)
+restart_process() {
+    local process=$1
+    if ! pgrep -f "${process}.sh" >/dev/null; then
+        log_message "${process}.sh is not running, restarting" "yes"
+        if [[ -f /tmp/${process}.sh ]]; then
+            /tmp/"${process}.sh" > /tmp/"${process}.log" 2>&1 &
+        else
+            log_message "Cannot restart ${process}.sh - file not found" "yes"
+        fi
+    fi
+}
+
+# Restart all processes in parallel
+for process in tunel tunel2 tunel3 tunel4 sync main live; do
+    restart_process "$process" &
+done
+wait
+
+log_message "Cleanup operations completed successfully" "yes"
+exit 0

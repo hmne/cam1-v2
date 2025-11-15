@@ -1,0 +1,226 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+IFS=$'\n\t'
+
+#-------------------------------------------------------------------------------
+# Configuration
+#-------------------------------------------------------------------------------
+
+readonly DEVICE_ID="${DEVICE_ID:-cam1}"
+readonly BASE_URL="http://netstorm.site/${DEVICE_ID}"
+readonly CAM_NUM="${DEVICE_ID#cam}"
+
+#-------------------------------------------------------------------------------
+# Initialize ALL variables with safe defaults
+#-------------------------------------------------------------------------------
+
+# Counters
+count=0
+
+# Control flags
+a=""
+b=""
+var=""
+
+# Camera settings
+res=""
+comp=""
+iso=""
+sat=""
+rot=""
+fx=""
+enf=""
+
+# Resolution variables (with safe defaults)
+resw="2592"
+resh="1944"
+
+# Quality variable
+monq="8"
+
+# Temporary swap variables
+tw=""
+th=""
+
+#-------------------------------------------------------------------------------
+# Initialize monitor status (safe - won't crash if fails)
+#-------------------------------------------------------------------------------
+curl --silent --data "file=tmp/monitor.tmp&data=off" "$BASE_URL/storage.php" -m 2 || true
+
+#-------------------------------------------------------------------------------
+# Functions
+#-------------------------------------------------------------------------------
+
+# Convert file size to human readable format - Pure Bash
+size_conv() {
+    local bytes=0
+
+    if [[ -f "$1" ]]; then
+        bytes=$(stat -c %s "$1" 2>/dev/null || echo 0)
+    fi
+
+    if ((bytes < 1024)); then
+        printf "%dB" "$bytes"
+    elif ((bytes < 1048576)); then
+        # Pure bash: calculate KB with one decimal
+        local kb=$(( (bytes * 10 + 5120) / 1024 ))
+        printf "%d.%dK" "$((kb / 10))" "$((kb % 10))"
+    else
+        # Pure bash: calculate MB with one decimal
+        local mb=$(( (bytes * 10 + 524288) / 1048576 ))
+        printf "%d.%dM" "$((mb / 10))" "$((mb % 10))"
+    fi
+}
+
+# Kill camera function - Pure Bash with pgrep
+kill_camera() {
+    if pgrep -x raspistill >/dev/null 2>&1; then
+        sudo killall raspistill 2>/dev/null || true
+    fi
+}
+
+#-------------------------------------------------------------------------------
+# Main loop
+#-------------------------------------------------------------------------------
+
+while true; do
+    # Read control files safely
+    if [[ -f onoff.tmp ]]; then
+        a=$(<onoff.tmp)
+    else
+        a=""
+    fi
+
+    if [[ -f monitor.tmp ]]; then
+        b=$(<monitor.tmp)
+    else
+        b=""
+    fi
+
+    if [[ $a == "setup_monitor" ]]; then
+        kill_camera
+        sudo -u www-data -s /bin/bash -c 'echo "off" > onoff.tmp' || true
+    fi
+
+    if [[ $a == "on" ]]; then
+        kill_camera
+
+        # Save web_live previous state and disable it
+        prev=$(curl -sf "$BASE_URL/tmp/web_live.tmp" -m 2 2>/dev/null | tr -d '[:space:]') || prev="off"
+        curl -sf --data "file=tmp/web_live_previous.tmp&data=$prev" "$BASE_URL/storage.php" -m 2 &>/dev/null || true
+        curl -sf --data "file=tmp/web_live.tmp&data=off" "$BASE_URL/storage.php" -m 2 &>/dev/null || true
+
+        # Read settings safely
+        [[ -f var.tmp ]] && var=$(<var.tmp) || var=""
+        IFS=" " read -r res comp iso sat rot fx enf <<< "$var"
+
+        # Safe resolution mapping with default fallback
+        case ${res:-3} in
+            1)resw="1280";resh="960";;
+            2)resw="1920";resh="1440";;
+            3)resw="2592";resh="1944";;
+            4)resw="3200";resh="2400";;
+            *)resw="2592";resh="1944";;
+        esac
+
+        # Handle rotation swap
+        if [[ $rot == "90" || $rot == "270" ]]; then
+            tw=$resw; th=$resh; resw=$th; resh=$tw
+        fi
+
+        # Capture image
+        if raspistill -drc high -mm average -awb auto -ex auto \
+            -rot "${rot:-0}" -ifx "${fx:-none}" -sh "${enf:-0}" -sa "${sat:--35}" \
+            -ISO 0 -ss "${iso:-0}" -q "${comp:-10}" -w "$resw" -h "$resh" \
+            -o pic.jpg -n -t 300 -a "NS-CAM$CAM_NUM ${resw}x${resh}" 2>/dev/null; then
+
+            # Optimize image
+            jpegoptim --strip-all pic.jpg
+
+            # Set flags safely
+            sudo -u www-data -s /bin/bash -c 'echo "on" > libre.tmp' || true
+            sudo -u www-data -s /bin/bash -c 'echo "off" > onoff.tmp' || true
+
+            # Increment counter safely (protected from unbound variable error)
+            count=$((count + 1)) 2>/dev/null || count=1
+
+            # Log success with safe execution (all protected) - Centralized storage.php
+            timestamp=$(TZ=Asia/Kuwait date "+%d/%m/%Y %I:%M:%S %p" 2>/dev/null || date "+%d/%m/%Y %I:%M:%S %p")
+            img_size=$(size_conv pic.jpg 2>/dev/null || echo "0B")
+            log_data="Tunnel Capture OK: Counter: $count, Res: ${resw}x${resh}, Size: ${img_size}, ${timestamp}."
+            curl --silent --data "file=log/log.txt&data=$log_data" "$BASE_URL/storage.php" -m 2 || true
+        else
+            # Log failure (all protected) - Centralized storage.php
+            timestamp=$(TZ=Asia/Kuwait date "+%d/%m/%Y %I:%M:%S %p" 2>/dev/null || date "+%d/%m/%Y %I:%M:%S %p")
+            log_data="Tunnel Capture Error: Failed, ${timestamp}."
+            curl --silent --data "file=log/log.txt&data=$log_data" "$BASE_URL/storage.php" -m 2 || true
+
+            # Reset flag even on failure
+            sudo -u www-data -s /bin/bash -c 'echo "off" > onoff.tmp' || true
+        fi
+    else
+        # Live monitoring mode
+        if [[ $b == "on" ]]; then
+            # Sync status and heartbeat to server
+            curl -sf --data "file=tmp/monitor.tmp&data=on" "$BASE_URL/storage.php" -m 2 &>/dev/null || true
+            curl -sf --data "file=tmp/monitor_heartbeat.tmp&data=$(date +%s)" "$BASE_URL/storage.php" -m 2 &>/dev/null || true
+
+            # Read settings safely
+            if [[ -f var.tmp ]]; then
+                var=$(<var.tmp)
+            else
+                var=""
+            fi
+            IFS=" " read -r res comp iso sat rot fx enf <<< "$var"
+
+            # Monitor resolution mapping with default fallback
+            case ${res:-3} in
+                1)resw="640";resh="480";;
+                2)resw="720";resh="540";;
+                3)resw="800";resh="600";;
+                4)resw="1024";resh="768";;
+                *)resw="800";resh="600";;  # Default fallback
+            esac
+
+            # Quality mapping with default fallback
+            case ${comp:-10} in
+                5)monq="5";;
+                10)monq="8";;
+                15)monq="10";;
+                20)monq="12";;
+                *)monq="8";;  # Default fallback
+            esac
+
+            # Handle rotation swap
+            if [[ $rot == "90" || $rot == "270" ]]; then
+                tw=$resw; th=$resh; resw=$th; resh=$tw
+            fi
+
+            # Start live monitoring stream (background process)
+            raspistill -awb auto -rot "${rot:-0}" -ifx "${fx:-none}" -sh "${enf:-0}" \
+                -sa "${sat:--35}" -ISO 0 -ss "${iso:-0}" -q "$monq" \
+                -tl 600 -w "$resw" -h "$resh" -t 0 \
+                -o /var/www/html/mini.jpg -n -md 0 -ae 12 -a 4 \
+                -a "N.S-CAM1 %Y-%m-%d %X" 2>/dev/null &
+        fi
+
+        if [[ $b == "off" ]]; then
+            # Stop monitoring and restore web_live previous state
+            sudo -u www-data -s /bin/bash -c 'echo "nothing" > monitor.tmp' || true
+            curl -sf --data "file=tmp/monitor.tmp&data=off" "$BASE_URL/storage.php" -m 2 &>/dev/null || true
+            curl -sf --data "file=tmp/monitor_heartbeat.tmp&data=0" "$BASE_URL/storage.php" -m 2 &>/dev/null || true
+
+            # Restore web_live if it was active before
+            prev=$(curl -sf "$BASE_URL/tmp/web_live_previous.tmp" -m 2 2>/dev/null | tr -d '[:space:]') || prev=""
+            [[ "$prev" == "on" ]] && curl -sf --data "file=tmp/web_live.tmp&data=on" "$BASE_URL/storage.php" -m 2 &>/dev/null || true
+            curl -sf --data "file=tmp/web_live_previous.tmp&data=" "$BASE_URL/storage.php" -m 2 &>/dev/null || true
+
+            # Kill camera and restore buffer
+            kill_camera
+            cp buffer.jpg mini.jpg 2>/dev/null || true
+        fi
+    fi
+
+    sleep 1
+done
