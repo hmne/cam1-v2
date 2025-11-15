@@ -49,22 +49,20 @@ try {
     // Disconnect
     $ssh->disconnect();
 
-    // Return success
-    http_response_code(200);
-    echo json_encode([
+    // Return success using helper function
+    sendJsonResponse([
         'success' => true,
         'message' => 'تم تنفيذ عملية التنظيف على ' . CAMERA_DISPLAY_NAME . ' بنجاح.',
         'output' => $result
-    ]);
+    ], 200);
 
 } catch (Exception $e) {
     // Log error
     logMessage("Cleanup failed: " . $e->getMessage(), 'ERROR');
 
-    // Return error
-    http_response_code(500);
-    echo json_encode([
+    // Return error using helper function
+    sendJsonResponse([
         'error' => 'Failed to execute cleanup',
         'message' => $e->getMessage()
-    ]);
+    ], 500);
 }

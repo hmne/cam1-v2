@@ -33,7 +33,7 @@ header('Content-Type: text/plain; charset=UTF-8');
 // =============================================================================
 
 /**
- * Validate file path against whitelist
+ * Validate file path against whitelist (enhanced security)
  *
  * @param string $path     File path to validate
  * @param bool   $isUpload Whether this is an upload operation
@@ -42,9 +42,18 @@ header('Content-Type: text/plain; charset=UTF-8');
  */
 function validateFilePath(string $path, bool $isUpload = false): bool
 {
-    // Check for directory traversal attempts
-    if (strpos($path, '..') !== false || strpos($path, "\0") !== false) {
+    // Check for directory traversal attempts and null bytes
+    if (strpos($path, '..') !== false ||
+        strpos($path, "\0") !== false ||
+        strpos($path, '../') !== false ||
+        strpos($path, '..\\') !== false) {
         logMessage("Directory traversal attempt: $path", 'WARNING');
+        return false;
+    }
+
+    // Prevent absolute path manipulation
+    if (strpos($path, '/') === 0 || preg_match('/^[a-z]:/i', $path)) {
+        logMessage("Absolute path attempt: $path", 'WARNING');
         return false;
     }
 
