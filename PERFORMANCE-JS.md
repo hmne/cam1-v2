@@ -7,9 +7,9 @@
 2. **Image Caching** - المتصفح يعرض الصور القديمة بدلاً من الجديدة
 3. **Background Tabs** - الموقع يستمر في العمل حتى عند الانتقال لتاب آخر
 
-## الحل: ملف JavaScript محسّن
+## الحل: تحسينات مطبقة مباشرة
 
-تم إنشاء `camera-control-optimized.js` مع التحسينات التالية:
+تم استبدال `camera-control.js` مباشرة بإصدار محسّن يتضمن التحسينات التالية:
 
 ### 1. ✅ Memory Leak Prevention
 
@@ -82,31 +82,41 @@ setInterval(function() {
 
 **النتيجة:** ذاكرة نظيفة طوال الوقت!
 
-## كيفية التطبيق
+## الملف مطبق بالفعل ✅
 
-### الخيار 1: استبدال الملف (موصى به)
+التحسينات **مطبقة مباشرة** في `assets/js/camera-control.js` - لا حاجة لإجراءات إضافية.
 
-```bash
-# النسخ الاحتياطي
-cp assets/js/camera-control.js assets/js/camera-control.backup.js
+### إعدادات إضافية (اختيارية)
 
-# الاستبدال
-cp assets/js/camera-control-optimized.js assets/js/camera-control.js
-```
+#### تعطيل Page Visibility API (إذا كنت تريد استمرار التحديثات في الخلفية):
 
-### الخيار 2: تحديث index.php
-
-في `index.php` سطر ~346:
+في `config/app-config.php`:
 
 ```php
-<!-- القديم -->
-<script src="assets/js/camera-control.js?v=..."></script>
+// Default: true (موفر للبطارية - يبطئ التحديثات عند الانتقال لتاب آخر)
+define('ENABLE_PAGE_VISIBILITY_OPTIMIZATION', true);
 
-<!-- الجديد -->
-<script src="assets/js/camera-control-optimized.js?v=<?= time() ?>"></script>
+// لتعطيله (يستمر التحديث بنفس السرعة حتى في الخلفية):
+define('ENABLE_PAGE_VISIBILITY_OPTIMIZATION', false);
 ```
 
+**التوصية:** اتركه `true` لتوفير البطارية على الأجهزة المحمولة.
+
 ## الإعدادات القابلة للتعديل
+
+### 1. إعدادات PHP (في `config/app-config.php`):
+
+```php
+// Page Visibility Optimization - توفير البطارية
+define('ENABLE_PAGE_VISIBILITY_OPTIMIZATION', true);
+```
+
+| القيمة | التأثير | الاستخدام المثالي |
+|--------|---------|-------------------|
+| `true` | يبطئ التحديثات عند الانتقال لتاب آخر (توفير البطارية) | iPhone/iPad/أجهزة محمولة |
+| `false` | يستمر التحديث بنفس السرعة حتى في الخلفية | مراقبة مستمرة على كمبيوتر |
+
+### 2. إعدادات JavaScript (في `assets/js/camera-control.js`):
 
 في بداية الملف:
 
@@ -114,19 +124,20 @@ cp assets/js/camera-control-optimized.js assets/js/camera-control.js
 const CONFIG = {
     // ... إعدادات موجودة ...
 
-    // جديد - إدارة الذاكرة
-    MAX_IMAGE_OBJECTS: 5,    // عدد Image objects المحتفظ بها (زِد إذا الموقع سريع)
-    CLEANUP_INTERVAL: 30000  // تنظيف كل 30 ثانية (قلل لتنظيف أسرع)
+    // إدارة الذاكرة
+    MAX_IMAGE_OBJECTS: 5,          // عدد Image objects المحتفظ بها
+    CLEANUP_INTERVAL: 30000,       // تنظيف كل 30 ثانية
+    ENABLE_PAGE_VISIBILITY: true   // يأتي من PHP config
 };
 ```
 
 ### توصيات الإعدادات:
 
-| الجهاز | MAX_IMAGE_OBJECTS | CLEANUP_INTERVAL |
-|--------|-------------------|------------------|
-| iPhone/iPad قديم | 3 | 20000 (20s) |
-| iPhone/iPad حديث | 5 | 30000 (30s) |
-| كمبيوتر | 10 | 60000 (60s) |
+| الجهاز | MAX_IMAGE_OBJECTS | CLEANUP_INTERVAL | PAGE_VISIBILITY |
+|--------|-------------------|------------------|-----------------|
+| iPhone/iPad قديم | 3 | 20000 (20s) | true ✅ |
+| iPhone/iPad حديث | 5 | 30000 (30s) | true ✅ |
+| كمبيوتر | 10 | 60000 (60s) | false (اختياري) |
 
 ## الفرق في الأداء
 
@@ -199,9 +210,9 @@ pic.jpg?v=1731670001000_def456uvw_2  ← مختلف تماماً
 ### المشكلة: الصور لا تزال تُخزن في الكاش
 
 **الحل:**
-1. تأكد من استخدام الملف المحسّن
-2. امسح cache المتصفح (Ctrl+Shift+Del)
-3. أعد تحميل الصفحة (Ctrl+F5)
+1. امسح cache المتصفح (Ctrl+Shift+Del)
+2. أعد تحميل الصفحة (Ctrl+F5)
+3. تحقق من أن الملف المحدث تم تحميله (افتح DevTools → Sources)
 
 ### المشكلة: الموقع أصبح أبطأ
 
@@ -256,18 +267,20 @@ CLEANUP_INTERVAL: 15000,  // قلل لـ 15 ثانية
 | Tracked Image Objects | سهولة التتبع والتنظيف |
 | Automatic Cleanup | ذاكرة مستقرة |
 
-### متى تستخدم الملف المحسّن؟
+### المشاكل التي تم حلها:
 
-✅ **استخدمه إذا:**
-- الموقع يصير بطيء بعد 10-15 دقيقة
-- الصور الجديدة لا تظهر
-- تستخدم iPad/iPhone للمراقبة
-- تترك الموقع مفتوح لساعات
+✅ **التحسينات المطبقة تحل:**
+- الموقع يصير بطيء بعد 10-15 دقيقة → **تم الحل ✅**
+- الصور الجديدة لا تظهر → **تم الحل ✅**
+- استهلاك البطارية العالي على iPad/iPhone → **تم الحل ✅**
+- Memory leaks عند ترك الموقع مفتوح لساعات → **تم الحل ✅**
 
-❌ **لا حاجة له إذا:**
-- الموقع سريع دائماً
-- تستخدم الموقع لدقائق فقط
-- لا توجد مشاكل memory
+### الفوائد لجميع المستخدمين:
+
+- **استقرار أفضل** - لا يوجد memory leaks
+- **أداء أسرع** - cache busting محسّن
+- **توفير البطارية** - Page Visibility API (يمكن تعطيله)
+- **موثوقية أعلى** - تنظيف تلقائي للذاكرة
 
 ## التوافق
 
