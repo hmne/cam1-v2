@@ -231,6 +231,12 @@ define('LIVE_QUALITY_PRESETS', [
 // Default Live Stream Quality
 define('DEFAULT_LIVE_QUALITY', 'very-low');
 
+// Page Visibility Optimization
+// When enabled: Reduces updates when browser tab is hidden (saves battery on mobile)
+// When disabled: Continuous updates even when tab is hidden
+// Recommended: true for mobile, false for dedicated monitoring screens
+define('ENABLE_PAGE_VISIBILITY_OPTIMIZATION', true);
+
 // =============================================================================
 // HTTP/AJAX SETTINGS
 // =============================================================================
