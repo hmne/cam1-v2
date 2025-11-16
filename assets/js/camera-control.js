@@ -592,13 +592,15 @@
                 .done(function(sizeData) {
                     $('#imageSizeText').addClass('data-text').html(
                         'Image size: ' + sizeData +
-                        ' <span class="capture-time">Time: ' + captureTime + 's</span>'
+                        ' <span class="capture-time">Time: ' + captureTime + 's</span>' +
+                        ' <button onclick="saveImageToDevice()" class="save-btn" title="Save to device (S)">💾</button>'
                     );
                 })
                 .fail(function() {
                     $('#imageSizeText').html(
                         'Image size: Unknown' +
-                        ' <span class="capture-time">Time: ' + captureTime + 's</span>'
+                        ' <span class="capture-time">Time: ' + captureTime + 's</span>' +
+                        ' <button onclick="saveImageToDevice()" class="save-btn" title="Save to device (S)">💾</button>'
                     );
                 });
         };
@@ -816,5 +818,68 @@
             console.error(`[${CONFIG.CAM}] ❌ Quality update failed: ${status}`);
         });
     };
+
+    // ========================================================================
+    // SAVE IMAGE TO DEVICE
+    // ========================================================================
+
+    window.saveImageToDevice = function() {
+        const timestamp = new Date().toISOString().slice(0, 19).replace(/:/g, '-').replace('T', '_');
+        const filename = CONFIG.CAM + '_' + timestamp + '.jpg';
+
+        const link = document.createElement('a');
+        link.href = 'pic.jpg?download=' + generateCacheBuster();
+        link.download = filename;
+        link.style.display = 'none';
+
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+
+        console.log(`[${CONFIG.CAM}] 💾 Saving image as: ${filename}`);
+    };
+
+    // ========================================================================
+    // KEYBOARD SHORTCUTS
+    // ========================================================================
+
+    $(document).on('keydown', function(e) {
+        // Don't trigger shortcuts when typing in input fields
+        if ($(e.target).is('input, textarea, select')) {
+            return;
+        }
+
+        switch (e.key.toLowerCase()) {
+            case 'c':
+                // C = Capture
+                e.preventDefault();
+                window.captureImage();
+                console.log(`[${CONFIG.CAM}] ⌨️ Keyboard shortcut: Capture (C)`);
+                break;
+
+            case 's':
+                // S = Save
+                e.preventDefault();
+                window.saveImageToDevice();
+                console.log(`[${CONFIG.CAM}] ⌨️ Keyboard shortcut: Save (S)`);
+                break;
+
+            case 'l':
+                // L = Toggle Live
+                e.preventDefault();
+                const currentState = $('#webLiveSelect').val();
+                $('#webLiveSelect').val(currentState === 'on' ? 'off' : 'on');
+                window.toggleWebLive();
+                console.log(`[${CONFIG.CAM}] ⌨️ Keyboard shortcut: Toggle Live (L)`);
+                break;
+
+            case 'r':
+                // R = Refresh status
+                e.preventDefault();
+                loadCameraStatus();
+                console.log(`[${CONFIG.CAM}] ⌨️ Keyboard shortcut: Refresh (R)`);
+                break;
+        }
+    });
 
 })(jQuery, window, document);
