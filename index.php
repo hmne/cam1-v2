@@ -32,7 +32,16 @@ require_once __DIR__ . '/includes/utilities.php';
 sendNoCacheHeaders();
 
 // Security: Generate admin token for button protection
-session_start();
+// Session options for enhanced security (from app-config.php settings)
+if (session_status() === PHP_SESSION_NONE) {
+    session_start([
+        'cookie_httponly' => true,
+        'cookie_samesite' => 'Strict',
+        'use_strict_mode' => true,
+        'use_only_cookies' => true
+    ]);
+}
+
 if (!isset($_SESSION['admin_token'])) {
     $_SESSION['admin_token'] = bin2hex(random_bytes(32));
 }
@@ -342,6 +351,8 @@ if (isset($_POST['b1']) && $_POST['b1'] === 'inic') {
         window.CAMERA_NAME = '<?= escapeHtml(CAMERA_DISPLAY_NAME) ?>';
         // Security token for admin actions
         window.ADMIN_TOKEN = '<?= $_SESSION['admin_token'] ?>';
+        // Performance settings
+        window.ENABLE_PAGE_VISIBILITY = <?= ENABLE_PAGE_VISIBILITY_OPTIMIZATION ? 'true' : 'false' ?>;
     </script>
     <script src="assets/js/camera-control.js?v=<?= file_exists('assets/js/camera-control.js') ? filemtime('assets/js/camera-control.js') : time() ?>"></script>
 </body>

@@ -48,21 +48,19 @@ try {
     // Disconnect
     $ssh->disconnect();
 
-    // Return success
-    http_response_code(200);
-    echo json_encode([
+    // Return success using helper function
+    sendJsonResponse([
         'success' => true,
         'message' => 'تم إرسال أمر إعادة التشغيل إلى ' . CAMERA_DISPLAY_NAME . ' بنجاح.'
-    ]);
+    ], 200);
 
 } catch (Exception $e) {
     // Log error
     logMessage("Reboot failed: " . $e->getMessage(), 'ERROR');
 
-    // Return error
-    http_response_code(500);
-    echo json_encode([
+    // Return error using helper function
+    sendJsonResponse([
         'error' => 'Failed to reboot camera',
         'message' => $e->getMessage()
-    ]);
+    ], 500);
 }

@@ -13,12 +13,18 @@ declare(strict_types=1);
  * - Camera files: WITH extension (battery.sh) - enables execution
  * - Example: shboot_ (website) → boot.sh (camera)
  *
+ * Performance Optimizations:
+ * - Session security hardening
+ * - Output buffering enabled
+ * - Realpath cache configured
+ * - For OPcache: Enable in php.ini (opcache.enable=1, opcache.memory_consumption=128)
+ *
  * @category  Configuration
  * @package   CameraControl
  * @author    Net Storm
  * @license   Proprietary
  * @version   2.0.0
- * @standards PSR-12, Twelve-Factor App
+ * @standards PSR-12, Twelve-Factor App, OWASP Top 10
  */
 
 // =============================================================================
@@ -30,6 +36,21 @@ ini_set('display_errors', '0');
 error_reporting(E_ALL);
 ini_set('log_errors', '1');
 ini_set('error_log', __DIR__ . '/../log/php_errors.log');
+
+// Performance: Session handling optimization
+ini_set('session.use_strict_mode', '1');
+ini_set('session.cookie_httponly', '1');
+ini_set('session.cookie_samesite', 'Strict');
+ini_set('session.use_only_cookies', '1');
+ini_set('session.cookie_secure', '0'); // Set to '1' if using HTTPS
+
+// Performance: Output buffering
+ini_set('output_buffering', '4096');
+ini_set('implicit_flush', '0');
+
+// Performance: Realpath cache (increase for better performance)
+ini_set('realpath_cache_size', '4096k');
+ini_set('realpath_cache_ttl', '600');
 
 // Timezone
 date_default_timezone_set('Asia/Kuwait');
@@ -209,6 +230,12 @@ define('LIVE_QUALITY_PRESETS', [
 
 // Default Live Stream Quality
 define('DEFAULT_LIVE_QUALITY', 'very-low');
+
+// Page Visibility Optimization
+// When enabled: Reduces updates when browser tab is hidden (saves battery on mobile)
+// When disabled: Continuous updates even when tab is hidden
+// Recommended: true for mobile, false for dedicated monitoring screens
+define('ENABLE_PAGE_VISIBILITY_OPTIMIZATION', true);
 
 // =============================================================================
 // HTTP/AJAX SETTINGS
