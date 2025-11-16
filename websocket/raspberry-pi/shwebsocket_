@@ -1,0 +1,344 @@
+#!/usr/bin/env bash
+#
+# WebSocket Client for Raspberry Pi Camera
+# Receives commands instantly and responds immediately
+#
+# Follows same pattern as shmain_, shboot_, shmonitor_
+# Install websocat first (see INSTALL.md)
+#
+# @version 2.0.0
+# @author Net Storm
+
+set -euo pipefail
+IFS=$'\n\t'
+
+# =============================================================================
+# CONFIGURATION - EDIT THESE
+# =============================================================================
+
+readonly WEBSOCKET_SERVER="${WS_SERVER:-ws://193.160.119.136:8080}"
+readonly DEVICE_ID="${DEVICE_ID:-cam1}"
+readonly HEARTBEAT_INTERVAL=3  # seconds
+
+# File paths
+readonly CAM_DIR="${HOME}/cam"
+readonly TMP_DIR="/var/tmp"
+readonly LOG_DIR="/var/log"
+
+readonly VAR_FILE="${TMP_DIR}/var.tmp"
+readonly ONOFF_FILE="${TMP_DIR}/onoff.tmp"
+readonly STATUS_FILE="${TMP_DIR}/status.tmp"
+readonly LIVE_FILE="${TMP_DIR}/web_live.tmp"
+readonly LIVE_QUALITY_FILE="${TMP_DIR}/web_live_quality.tmp"
+
+readonly PIC_FILE="${TMP_DIR}/pic.jpg"
+readonly LIVE_JPG="${TMP_DIR}/live.jpg"
+
+readonly LOG_FILE="${LOG_DIR}/websocket.log"
+
+# SFTP settings (same as shmain_)
+readonly SFTP_USER="${SFTP_USER:-user}"
+readonly SFTP_HOST="${SFTP_HOST:-netstorm.site}"
+readonly SFTP_PATH="${SFTP_PATH:-/home/user/${DEVICE_ID}/}"
+
+# =============================================================================
+# LOGGING
+# =============================================================================
+
+log_message() {
+    local level="$1"
+    local message="$2"
+    local timestamp
+    timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+    echo "[$timestamp] [$level] $message" | tee -a "$LOG_FILE"
+}
+
+# =============================================================================
+# SYSTEM STATUS
+# =============================================================================
+
+get_system_status() {
+    local memory temp ping_ms wifi_quality
+
+    # Memory usage
+    memory=$(free -m 2>/dev/null | awk '/Mem:/ {printf "%.0f%%", $3/$2*100}' || echo "N/A")
+
+    # Temperature
+    if [[ -f /sys/class/thermal/thermal_zone0/temp ]]; then
+        temp=$(awk '{printf "%.1fC", $1/1000}' /sys/class/thermal/thermal_zone0/temp 2>/dev/null || echo "N/A")
+    else
+        temp="N/A"
+    fi
+
+    # Ping
+    ping_ms=$(ping -c 1 -W 2 8.8.8.8 2>/dev/null | grep -oP 'time=\K[\d.]+' || echo "N/A")
+    [[ "$ping_ms" != "N/A" ]] && ping_ms="${ping_ms}ms"
+
+    # WiFi signal
+    wifi_quality=$(iwconfig 2>/dev/null | grep -oP 'Link Quality=\K\d+/\d+' || echo "")
+    if [[ -n "$wifi_quality" ]]; then
+        local num den
+        num=$(echo "$wifi_quality" | cut -d'/' -f1)
+        den=$(echo "$wifi_quality" | cut -d'/' -f2)
+        wifi_quality=$(awk "BEGIN {printf \"%.0f%%\", ($num/$den)*100}")
+    else
+        wifi_quality="N/A"
+    fi
+
+    echo "${memory},${temp},${ping_ms},${wifi_quality}"
+}
+
+# =============================================================================
+# CAMERA OPERATIONS
+# =============================================================================
+
+capture_image() {
+    local capture_id="$1"
+    local start_time duration
+
+    start_time=$(date +%s%3N)
+    log_message "INFO" "Capture started: $capture_id"
+
+    # Read current settings
+    local res=1920 height=1080 quality=75 rotation=0
+
+    if [[ -f "$VAR_FILE" ]]; then
+        local settings
+        IFS=' ' read -ra settings < "$VAR_FILE"
+        local res_idx="${settings[0]:-1}"
+        local comp="${settings[1]:-25}"
+        rotation="${settings[4]:-0}"
+
+        # Resolution mapping
+        case "$res_idx" in
+            1) res=1280; height=960 ;;
+            2) res=1920; height=1080 ;;
+            3) res=2592; height=1944 ;;
+            4) res=3200; height=2400 ;;
+        esac
+
+        quality=$((100 - comp))
+    fi
+
+    # Capture with raspistill
+    if raspistill -w "$res" -h "$height" -q "$quality" -rot "$rotation" -t 1 -o "$PIC_FILE" 2>/dev/null; then
+        log_message "INFO" "Image captured: ${res}x${height}"
+    else
+        log_message "ERROR" "raspistill failed"
+        echo "error:raspistill_failed"
+        return 1
+    fi
+
+    # Upload via SCP
+    if scp -o StrictHostKeyChecking=no -o ConnectTimeout=10 "$PIC_FILE" "${SFTP_USER}@${SFTP_HOST}:${SFTP_PATH}pic.jpg" 2>/dev/null; then
+        log_message "INFO" "Image uploaded"
+    else
+        log_message "ERROR" "SCP upload failed"
+        echo "error:upload_failed"
+        return 1
+    fi
+
+    duration=$(( $(date +%s%3N) - start_time ))
+    log_message "INFO" "Capture complete: ${duration}ms"
+
+    echo "done:${capture_id}:${duration}"
+}
+
+update_settings() {
+    local new_settings="$1"
+    log_message "INFO" "Settings update: $new_settings"
+    echo "$new_settings" > "$VAR_FILE"
+}
+
+start_live_stream() {
+    local quality="${1:-medium}"
+    log_message "INFO" "Live stream starting: $quality"
+
+    # Quality presets
+    local w=800 h=600 q=24
+    case "$quality" in
+        very-low) w=480; h=360; q=8 ;;
+        low) w=640; h=480; q=15 ;;
+        medium) w=800; h=600; q=24 ;;
+        high) w=1280; h=720; q=50 ;;
+        very-high) w=1920; h=1080; q=75 ;;
+    esac
+
+    echo "$w $h $q" > "$LIVE_QUALITY_FILE"
+    echo "on" > "$LIVE_FILE"
+}
+
+stop_live_stream() {
+    log_message "INFO" "Live stream stopping"
+    echo "off" > "$LIVE_FILE"
+}
+
+# =============================================================================
+# WEBSOCKET MESSAGE HANDLER
+# =============================================================================
+
+handle_message() {
+    local message="$1"
+    local type
+
+    # Parse JSON (basic)
+    type=$(echo "$message" | grep -oP '"type"\s*:\s*"\K[^"]+' || echo "")
+
+    case "$type" in
+        capture)
+            local capture_id
+            capture_id=$(echo "$message" | grep -oP '"id"\s*:\s*"\K[^"]+' || echo "$(date +%s)")
+
+            result=$(capture_image "$capture_id")
+            if [[ "$result" == done:* ]]; then
+                local id duration
+                id=$(echo "$result" | cut -d: -f2)
+                duration=$(echo "$result" | cut -d: -f3)
+                echo "{\"type\":\"capture_done\",\"id\":\"$id\",\"url\":\"pic.jpg\",\"duration\":$duration}"
+            else
+                echo "{\"type\":\"capture_error\",\"error\":\"$result\"}"
+            fi
+            ;;
+
+        settings)
+            local data
+            data=$(echo "$message" | grep -oP '"data"\s*:\s*"\K[^"]+' || echo "")
+            if [[ -n "$data" ]]; then
+                update_settings "$data"
+                echo "{\"type\":\"settings_ok\"}"
+            fi
+            ;;
+
+        live_start)
+            local quality
+            quality=$(echo "$message" | grep -oP '"quality"\s*:\s*"\K[^"]+' || echo "medium")
+            start_live_stream "$quality"
+            echo "{\"type\":\"live_status\",\"active\":true}"
+            ;;
+
+        live_stop)
+            stop_live_stream
+            echo "{\"type\":\"live_status\",\"active\":false}"
+            ;;
+
+        *)
+            log_message "WARN" "Unknown message type: $type"
+            ;;
+    esac
+}
+
+# =============================================================================
+# LIVE STREAM LOOP (runs in background)
+# =============================================================================
+
+live_stream_loop() {
+    while true; do
+        if [[ -f "$LIVE_FILE" ]] && [[ "$(cat "$LIVE_FILE" 2>/dev/null)" == "on" ]]; then
+            local w=800 h=600 q=24
+
+            if [[ -f "$LIVE_QUALITY_FILE" ]]; then
+                read -r w h q < "$LIVE_QUALITY_FILE"
+            fi
+
+            # Capture frame
+            if raspistill -w "$w" -h "$h" -q "$q" -t 1 -o "$LIVE_JPG" 2>/dev/null; then
+                # Upload
+                scp -o StrictHostKeyChecking=no -o ConnectTimeout=5 "$LIVE_JPG" "${SFTP_USER}@${SFTP_HOST}:${SFTP_PATH}live.jpg" 2>/dev/null || true
+
+                # Notify via WebSocket (if connected)
+                echo "{\"type\":\"live_frame\"}" > /tmp/ws_out.json
+            fi
+
+            sleep 0.5
+        else
+            sleep 1
+        fi
+    done
+}
+
+# =============================================================================
+# HEARTBEAT LOOP (runs in background)
+# =============================================================================
+
+heartbeat_loop() {
+    while true; do
+        local status
+        status=$(get_system_status)
+        echo "{\"type\":\"heartbeat\",\"data\":\"$status\"}" > /tmp/ws_heartbeat.json
+        echo "$status" > "$STATUS_FILE"
+        sleep "$HEARTBEAT_INTERVAL"
+    done
+}
+
+# =============================================================================
+# MAIN WEBSOCKET CONNECTION
+# =============================================================================
+
+connect_websocket() {
+    log_message "INFO" "Connecting to $WEBSOCKET_SERVER"
+
+    # Start background processes
+    heartbeat_loop &
+    local heartbeat_pid=$!
+
+    live_stream_loop &
+    local live_pid=$!
+
+    # Cleanup on exit
+    trap "kill $heartbeat_pid $live_pid 2>/dev/null; exit" EXIT INT TERM
+
+    # Connect with websocat
+    {
+        # Send identification
+        echo '{"type":"identify","role":"camera"}'
+
+        # Send heartbeats
+        while true; do
+            if [[ -f /tmp/ws_heartbeat.json ]]; then
+                cat /tmp/ws_heartbeat.json
+                rm -f /tmp/ws_heartbeat.json
+            fi
+
+            if [[ -f /tmp/ws_out.json ]]; then
+                cat /tmp/ws_out.json
+                rm -f /tmp/ws_out.json
+            fi
+
+            sleep 1
+        done
+    } | websocat -t "$WEBSOCKET_SERVER" | while read -r line; do
+        # Handle incoming messages
+        response=$(handle_message "$line")
+        if [[ -n "$response" ]]; then
+            echo "$response" > /tmp/ws_out.json
+        fi
+    done
+
+    log_message "ERROR" "WebSocket disconnected"
+}
+
+# =============================================================================
+# MAIN
+# =============================================================================
+
+main() {
+    log_message "INFO" "Starting WebSocket client for $DEVICE_ID"
+
+    # Check websocat
+    if ! command -v websocat &>/dev/null; then
+        log_message "ERROR" "websocat not installed. Run: sudo ./install-websocat.sh"
+        exit 1
+    fi
+
+    # Create directories
+    mkdir -p "$TMP_DIR" "$LOG_DIR"
+
+    # Reconnection loop
+    while true; do
+        connect_websocket || true
+        log_message "INFO" "Reconnecting in 5 seconds..."
+        sleep 5
+    done
+}
+
+main "$@"
