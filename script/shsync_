@@ -1,30 +1,69 @@
 #!/usr/bin/env bash
 
-set -euo pipefail
-IFS=$'\n\t'
+#===============================================================================
+# SYNC SCRIPT - Camera Status Synchronization
+#===============================================================================
+set -Eeuo pipefail
+
 
 #===============================================================================
-# DEVICE CONFIGURATION
+# CONFIG
 #===============================================================================
 readonly DEVICE_ID="${DEVICE_ID:-cam1}"
 readonly BASE_URL="http://netstorm.site/${DEVICE_ID}"
 
-#===============================================================================
-# Cleanup trap
-#===============================================================================
-cleanup() {
-    local pids
-    pids="$(jobs -p 2>/dev/null)" || :
-    [[ -n $pids ]] && {
-        echo "$pids" | xargs -r kill -TERM 2>/dev/null || :
-        echo "$pids" | xargs -r wait 2>/dev/null || :
-    }
-    exit "${1:-0}"
-}
-trap 'cleanup $?' EXIT INT TERM
+# Export for external scripts
+export DEVICE_ID BASE_URL
+
 
 #===============================================================================
-# Functions
+# TRAP HANDLERS
+#===============================================================================
+cleanup() {
+    local exit_code=${1:-$?}
+
+    # Kill any background jobs silently
+    local pid
+    for pid in $(jobs -p 2>/dev/null); do
+        kill -TERM "$pid" 2>/dev/null || :
+        wait "$pid" 2>/dev/null || :
+    done
+
+    exit "$exit_code"
+}
+
+
+err_trap() {
+    local exit_code=$? line="${BASH_LINENO[0]}" func="${FUNCNAME[1]:-main}"
+    printf '[ERROR] %s:%s (exit %d)\n' "$func" "$line" "$exit_code" >&2
+}
+
+
+trap 'cleanup $?' EXIT INT TERM
+trap err_trap ERR
+
+
+#===============================================================================
+# LOGGING
+#===============================================================================
+log() {
+    printf '[%s] [%s] %s\n' "$(date '+%H:%M:%S')" "$1" "$2"
+}
+
+
+log_web() {
+    local level="$1" msg="$2"
+    local data
+    data="${level} ${msg} $(TZ=Asia/Kuwait date '+%d/%m %H:%M:%S')"
+
+    # Single attempt, max 2s timeout - fail silently
+    curl -sf --max-time 2 --data-urlencode "file=log/log.txt" \
+        --data-urlencode "data=$data" "${BASE_URL}/storage.php" >/dev/null 2>&1 || :
+}
+
+
+#===============================================================================
+# FUNCTIONS
 #===============================================================================
 
 # Check internet connectivity
@@ -32,12 +71,12 @@ check_internet() {
     ping -q -c 1 -W 1 9.9.9.9 >/dev/null 2>&1
 }
 
+
 # Get WiFi signal quality (Pure Bash)
 get_wifi_quality() {
     local signal_line level
     signal_line="$(iwconfig wlan0 2>/dev/null)" || { echo "Unknown"; return; }
 
-    # FIXED: SC2015
     if [[ $signal_line =~ Signal\ level=(-?[0-9]+) ]]; then
         level="${BASH_REMATCH[1]#-}"
     else
@@ -53,6 +92,7 @@ get_wifi_quality() {
     fi
 }
 
+
 # Get TX bytes (Pure Bash)
 get_tx_bytes() {
     local ifconfig_out
@@ -61,11 +101,13 @@ get_tx_bytes() {
     [[ $ifconfig_out =~ TX[^(]*\(([^)]+)\) ]] && echo "${BASH_REMATCH[1]}" || echo "N/A"
 }
 
+
 # Get CPU temperature (Pure Bash)
 get_cpu_temp() {
     local temp_file="/sys/class/thermal/thermal_zone0/temp"
     [[ -r $temp_file ]] && echo "$(($(< "$temp_file") / 1000))°C" || echo "N/A"
 }
+
 
 # Get ping time (Pure Bash)
 get_ping_time() {
@@ -75,35 +117,57 @@ get_ping_time() {
     [[ $ping_out =~ time=([0-9.]+[[:space:]]*ms) ]] && echo "${BASH_REMATCH[1]}" || echo "N/A"
 }
 
-# Upload data with retry - FIXED: Add tmp/ prefix for routing
-upload_data() {
-    local file=$1 data=$2 attempt=0
 
-    # Add tmp/ prefix if not already present for proper routing in storage.php
+# Upload data with retry and URL encoding
+upload_data() {
+    local file=$1 data=$2 attempt
+
+    # Add tmp/ prefix if not already present for proper routing
     [[ $file != tmp/* ]] && file="tmp/${file}"
 
-    while ((attempt++ < 2)); do
-        curl -sf -H 'Cache-Control: no-cache' --data "file=${file}&data=${data}" "${BASE_URL}/storage.php" -m 10 >/dev/null 2>&1 && return 0
+    for attempt in {1..2}; do
+        if curl -sf --max-time 10 -H 'Cache-Control: no-cache' \
+            --data-urlencode "file=${file}" \
+            --data-urlencode "data=${data}" \
+            "${BASE_URL}/storage.php" >/dev/null 2>&1; then
+            [[ $attempt -gt 1 ]] && log "INFO" "Upload succeeded on attempt $attempt: ${file##*/}"
+            return 0
+        fi
         sleep 1
     done
+
+    log "WARN" "Upload failed after 2 attempts: ${file##*/}"
     return 1
 }
 
-# Sync tunnel URLs
+
+# Sync tunnel URLs in parallel
 sync_tunnel_urls() {
     local file data
+
     for file in url.tmp url2.tmp url3.tmp url4.tmp ssh2.tmp; do
         [[ -f $file ]] || continue
+
+        # Read file content
         data="$(<"$file")"
-        upload_data "$file" "$data" &
+
+        # Verify file has content
+        if [[ -n $data ]]; then
+            upload_data "$file" "$data" &
+        fi
     done
+
     wait
 }
 
+
 #===============================================================================
-# Main Loop
+# MAIN LOOP
 #===============================================================================
 main() {
+    log "INFO" "=== SYNC SERVICE STARTED ==="
+    log_web "INFO" "Sync Service Started"
+
     while true; do
         if check_internet; then
             # Gather system stats
@@ -121,12 +185,13 @@ main() {
             echo "$status_data" > status.tmp 2>/dev/null || :
             upload_data "status.tmp" "$status_data" &
 
-            # Sync tunnel URLs
+            # Sync tunnel URLs in parallel
             sync_tunnel_urls
         fi
 
         sleep 10
     done
 }
+
 
 main "$@"
