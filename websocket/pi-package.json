@@ -1,0 +1,17 @@
+{
+  "name": "cam-pi-client",
+  "version": "1.0.0",
+  "description": "Raspberry Pi WebSocket client for instant camera control",
+  "main": "pi-client.js",
+  "scripts": {
+    "start": "node pi-client.js"
+  },
+  "dependencies": {
+    "ws": "^8.14.2"
+  },
+  "author": "Net Storm",
+  "license": "Proprietary",
+  "engines": {
+    "node": ">=12.0.0"
+  }
+}

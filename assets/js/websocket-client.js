@@ -1,24 +1,24 @@
 /**
- * WebSocket Client for Real-time Camera Status
+ * WebSocket Client for Full Camera Control
  *
- * Connects to VPS WebSocket server for instant status updates
- * Falls back to HTTP polling if WebSocket unavailable
+ * Real-time bidirectional communication:
+ * - Instant capture commands and responses
+ * - Live stream control
+ * - Settings synchronization
+ * - Status monitoring
  *
- * @version 1.0.0
+ * @version 2.0.0
  */
 
 'use strict';
 
 (function(window) {
-    // Configuration - Uses PHP config or defaults
+    // Configuration
     const WS_CONFIG = {
-        // Server URL (from PHP config or default)
         SERVER_URL: window.WEBSOCKET_SERVER_URL || 'ws://193.160.119.136:8080',
-
-        // Reconnect settings
-        RECONNECT_DELAY: 3000,      // 3 seconds
-        MAX_RECONNECT_DELAY: 30000, // Max 30 seconds
-        RECONNECT_MULTIPLIER: 1.5   // Exponential backoff
+        RECONNECT_DELAY: 2000,
+        MAX_RECONNECT_DELAY: 30000,
+        RECONNECT_MULTIPLIER: 1.5
     };
 
     // State
@@ -26,27 +26,32 @@
     let reconnectDelay = WS_CONFIG.RECONNECT_DELAY;
     let reconnectTimer = null;
     let isConnected = false;
+    let pendingCapture = null;
+    let captureCallbacks = {};
 
     /**
      * Connect to WebSocket server
      */
     function connect() {
         if (ws && ws.readyState === WebSocket.OPEN) {
-            return; // Already connected
+            return;
         }
 
-        console.log('[WebSocket] Connecting to', WS_CONFIG.SERVER_URL);
+        console.log('[WS] Connecting to', WS_CONFIG.SERVER_URL);
 
         try {
             ws = new WebSocket(WS_CONFIG.SERVER_URL);
 
             ws.onopen = function() {
-                console.log('[WebSocket] Connected');
+                console.log('[WS] Connected');
                 isConnected = true;
-                reconnectDelay = WS_CONFIG.RECONNECT_DELAY; // Reset delay
+                reconnectDelay = WS_CONFIG.RECONNECT_DELAY;
 
-                // Request current status
-                ws.send(JSON.stringify({ type: 'get_status' }));
+                // Identify as browser client
+                sendMessage({ type: 'identify', role: 'browser' });
+
+                // Trigger event
+                window.dispatchEvent(new CustomEvent('wsConnected'));
             };
 
             ws.onmessage = function(event) {
@@ -54,40 +59,46 @@
                     const message = JSON.parse(event.data);
                     handleMessage(message);
                 } catch (err) {
-                    console.error('[WebSocket] Parse error:', err);
+                    console.error('[WS] Parse error:', err);
                 }
             };
 
             ws.onclose = function() {
-                console.log('[WebSocket] Disconnected');
+                console.log('[WS] Disconnected');
                 isConnected = false;
+                window.dispatchEvent(new CustomEvent('wsDisconnected'));
                 scheduleReconnect();
             };
 
             ws.onerror = function(err) {
-                console.error('[WebSocket] Error:', err);
-                isConnected = false;
+                console.error('[WS] Error:', err);
             };
 
         } catch (err) {
-            console.error('[WebSocket] Connection failed:', err);
+            console.error('[WS] Connection failed:', err);
             scheduleReconnect();
         }
     }
 
     /**
-     * Schedule reconnection with exponential backoff
+     * Send message to server
+     */
+    function sendMessage(data) {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify(data));
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * Schedule reconnection
      */
     function scheduleReconnect() {
-        if (reconnectTimer) {
-            clearTimeout(reconnectTimer);
-        }
-
-        console.log('[WebSocket] Reconnecting in', reconnectDelay / 1000, 'seconds');
+        if (reconnectTimer) clearTimeout(reconnectTimer);
 
         reconnectTimer = setTimeout(() => {
             connect();
-            // Increase delay for next attempt (exponential backoff)
             reconnectDelay = Math.min(
                 reconnectDelay * WS_CONFIG.RECONNECT_MULTIPLIER,
                 WS_CONFIG.MAX_RECONNECT_DELAY
@@ -96,55 +107,184 @@
     }
 
     /**
-     * Handle incoming WebSocket messages
+     * Handle incoming messages
      */
     function handleMessage(message) {
+        console.log('[WS] Received:', message.type);
+
         switch (message.type) {
+            // Camera status
             case 'status':
-                updateCameraStatus(message);
+                handleStatus(message);
                 break;
 
+            // Camera connected
+            case 'camera_connected':
+                window.dispatchEvent(new CustomEvent('cameraConnected', { detail: message }));
+                showNotification('📷 Camera Connected', 'Camera is online and ready');
+                break;
+
+            // Camera disconnected
+            case 'camera_disconnected':
+                window.dispatchEvent(new CustomEvent('cameraDisconnected', { detail: message }));
+                showNotification('🔴 Camera Disconnected', 'Connection lost!');
+                break;
+
+            // Capture started
+            case 'capture_started':
+                pendingCapture = message.captureId;
+                window.dispatchEvent(new CustomEvent('captureStarted', { detail: message }));
+                console.log('[WS] 📸 Capture started:', message.captureId);
+                break;
+
+            // Capture completed - THIS IS THE KEY FOR INSTANT RESPONSE
+            case 'capture_complete':
+                handleCaptureComplete(message);
+                break;
+
+            // Capture timeout
+            case 'capture_timeout':
+                pendingCapture = null;
+                window.dispatchEvent(new CustomEvent('captureTimeout', { detail: message }));
+                showNotification('⚠️ Capture Timeout', 'Image capture took too long');
+                break;
+
+            // Live stream frame ready
+            case 'live_frame_ready':
+                window.dispatchEvent(new CustomEvent('liveFrameReady', {
+                    detail: { imageUrl: message.imageUrl }
+                }));
+                break;
+
+            // Live stream status
+            case 'live_status':
+                window.dispatchEvent(new CustomEvent('liveStatusChanged', {
+                    detail: { active: message.active }
+                }));
+                break;
+
+            // Notifications
             case 'notification':
                 showNotification(message.title, message.body);
                 break;
 
+            // Errors
+            case 'error':
+                console.error('[WS] Error:', message.message);
+                window.dispatchEvent(new CustomEvent('wsError', { detail: message }));
+                break;
+
             default:
-                console.log('[WebSocket] Unknown message type:', message.type);
+                console.log('[WS] Unknown message:', message.type);
         }
     }
 
     /**
-     * Update camera status in UI
+     * Handle status update
      */
-    function updateCameraStatus(status) {
-        // Update global status variables
+    function handleStatus(status) {
         window.cameraOnlineStatus = status.online;
-        window.secondsSinceUpdate = status.online ? 0 : 999;
+        window.cameraCapturing = status.capturing;
+        window.cameraLiveStreaming = status.liveStreaming;
 
-        // Parse status data (memory,temp,ping,signal)
         const parts = (status.data || 'N/A,N/A,N/A,N/A').split(',');
 
-        // Trigger status update event
-        const event = new CustomEvent('cameraStatusUpdate', {
+        window.dispatchEvent(new CustomEvent('cameraStatusUpdate', {
             detail: {
                 online: status.online,
+                capturing: status.capturing,
+                liveStreaming: status.liveStreaming,
                 memory: parts[0] || 'N/A',
                 temperature: parts[1] || 'N/A',
                 latency: parts[2] || 'N/A',
                 signal: parts[3] || 'N/A',
                 timestamp: status.timestamp
             }
-        });
-        window.dispatchEvent(event);
+        }));
 
-        // Update status indicator if exists
+        // Update UI
         const indicator = document.querySelector('.status-indicator');
         if (indicator) {
             indicator.className = 'status-indicator ' + (status.online ? 'online' : 'offline');
             indicator.textContent = status.online ? 'Connected (Online)' : 'Disconnected (Offline)';
         }
+    }
 
-        console.log('[WebSocket] Status update:', status.online ? 'ONLINE' : 'OFFLINE');
+    /**
+     * Handle capture completion - INSTANT IMAGE DISPLAY
+     */
+    function handleCaptureComplete(message) {
+        console.log('[WS] ✅ Capture complete in', message.duration, 'ms');
+
+        pendingCapture = null;
+
+        // Dispatch event for immediate image update
+        window.dispatchEvent(new CustomEvent('captureComplete', {
+            detail: {
+                captureId: message.captureId,
+                imageUrl: message.imageUrl,
+                duration: message.duration,
+                timestamp: message.timestamp
+            }
+        }));
+
+        // Call any registered callback
+        if (captureCallbacks[message.captureId]) {
+            captureCallbacks[message.captureId](message);
+            delete captureCallbacks[message.captureId];
+        }
+
+        // Show notification
+        showNotification('📸 Capture Complete', 'Image captured in ' + message.duration + 'ms');
+    }
+
+    /**
+     * CAPTURE IMAGE - Instant command to camera
+     */
+    function captureImage(callback) {
+        if (!isConnected) {
+            console.error('[WS] Not connected');
+            return false;
+        }
+
+        const captureId = Date.now().toString();
+
+        if (callback) {
+            captureCallbacks[captureId] = callback;
+        }
+
+        return sendMessage({ type: 'capture' });
+    }
+
+    /**
+     * START LIVE STREAM
+     */
+    function startLiveStream(quality) {
+        return sendMessage({
+            type: 'live_control',
+            action: 'start',
+            quality: quality || 'medium'
+        });
+    }
+
+    /**
+     * STOP LIVE STREAM
+     */
+    function stopLiveStream() {
+        return sendMessage({
+            type: 'live_control',
+            action: 'stop'
+        });
+    }
+
+    /**
+     * UPDATE SETTINGS - Instant to camera
+     */
+    function updateSettings(settings) {
+        return sendMessage({
+            type: 'settings_update',
+            settings: settings
+        });
     }
 
     /**
@@ -156,7 +296,6 @@
             return;
         }
 
-        // Check permission
         if (!('Notification' in window) || Notification.permission !== 'granted') {
             return;
         }
@@ -164,38 +303,22 @@
         const notification = new Notification(title, {
             body: body,
             icon: 'assets/images/logo.ico',
-            tag: 'camera-status',
+            tag: 'camera-ws',
             renotify: true
         });
 
-        setTimeout(() => notification.close(), 10000);
-
-        notification.onclick = function() {
+        setTimeout(() => notification.close(), 8000);
+        notification.onclick = () => {
             window.focus();
             notification.close();
         };
     }
 
     /**
-     * Check if WebSocket is connected
+     * Check connection status
      */
     function isWebSocketConnected() {
         return isConnected && ws && ws.readyState === WebSocket.OPEN;
-    }
-
-    /**
-     * Get connection status
-     */
-    function getConnectionStatus() {
-        if (!ws) return 'disconnected';
-
-        switch (ws.readyState) {
-            case WebSocket.CONNECTING: return 'connecting';
-            case WebSocket.OPEN: return 'connected';
-            case WebSocket.CLOSING: return 'closing';
-            case WebSocket.CLOSED: return 'disconnected';
-            default: return 'unknown';
-        }
     }
 
     // Request notification permission
@@ -203,7 +326,7 @@
         Notification.requestPermission();
     }
 
-    // Auto-connect on page load
+    // Auto-connect
     if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', connect);
     } else {
@@ -212,9 +335,18 @@
 
     // Expose API
     window.CameraWebSocket = {
+        // Connection
         connect: connect,
         isConnected: isWebSocketConnected,
-        getStatus: getConnectionStatus,
+        sendMessage: sendMessage,
+
+        // Camera Control - INSTANT
+        capture: captureImage,
+        startLive: startLiveStream,
+        stopLive: stopLiveStream,
+        updateSettings: updateSettings,
+
+        // Config
         config: WS_CONFIG
     };
 
