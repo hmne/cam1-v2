@@ -71,6 +71,13 @@ define('SPEED_MODE', false);
 // ULTRA_PERFORMANCE: true = Vanilla JS (no jQuery, faster), false = jQuery version
 define('ULTRA_PERFORMANCE', true);
 
+// WEBSOCKET_ENABLED: true = Use WebSocket for real-time updates, false = HTTP polling
+// Requires WebSocket server running on VPS (see websocket/INSTALL.md)
+define('WEBSOCKET_ENABLED', false);  // Set to true after configuring VPS
+
+// WebSocket Server URL (update with your VPS IP)
+define('WEBSOCKET_SERVER_URL', 'ws://193.160.119.136:8080');
+
 // =============================================================================
 // FILE SYSTEM PATHS
 // =============================================================================

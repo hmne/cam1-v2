@@ -1,0 +1,23 @@
+[Unit]
+Description=Camera WebSocket Server
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/cam-websocket
+ExecStart=/usr/bin/node /opt/cam-websocket/server.js
+Restart=always
+RestartSec=10
+StandardOutput=syslog
+StandardError=syslog
+SyslogIdentifier=cam-websocket
+
+# Security
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/cam-websocket
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,127 @@
+#!/usr/bin/env bash
+#
+# WebSocket Status Sender for Raspberry Pi
+# Sends camera status to VPS WebSocket server every 5 seconds
+#
+# Usage: ./websocket.sh
+# Add to crontab: @reboot /home/pi/cam/websocket.sh
+
+set -euo pipefail
+
+# Configuration - UPDATE THESE
+readonly WEBSOCKET_SERVER="193.160.119.136"
+readonly WEBSOCKET_PORT="8080"
+readonly UPDATE_INTERVAL=5  # seconds
+
+# File paths
+readonly STATUS_FILE="/var/tmp/status.tmp"
+readonly LOG_FILE="/var/log/websocket_sender.log"
+
+# Log function
+log_message() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" >> "$LOG_FILE"
+}
+
+# Get system status
+get_status() {
+    local memory temp ping_ms wifi_quality
+
+    # Memory usage
+    memory=$(free -m | awk '/Mem:/ {printf "%.0f%%", $3/$2*100}')
+
+    # CPU temperature
+    if [[ -f /sys/class/thermal/thermal_zone0/temp ]]; then
+        temp=$(awk '{printf "%.1fC", $1/1000}' /sys/class/thermal/thermal_zone0/temp)
+    else
+        temp="N/A"
+    fi
+
+    # Network latency (ping google)
+    ping_ms=$(ping -c 1 -W 2 8.8.8.8 2>/dev/null | grep -oP 'time=\K[\d.]+' || echo "N/A")
+    if [[ "$ping_ms" != "N/A" ]]; then
+        ping_ms="${ping_ms}ms"
+    fi
+
+    # WiFi signal quality
+    if command -v iwconfig &>/dev/null; then
+        wifi_quality=$(iwconfig 2>/dev/null | grep -oP 'Link Quality=\K\d+/\d+' || echo "N/A")
+        if [[ "$wifi_quality" != "N/A" ]]; then
+            # Convert to percentage
+            local num den
+            num=$(echo "$wifi_quality" | cut -d'/' -f1)
+            den=$(echo "$wifi_quality" | cut -d'/' -f2)
+            wifi_quality=$(awk "BEGIN {printf \"%.0f%%\", ($num/$den)*100}")
+        fi
+    else
+        wifi_quality="N/A"
+    fi
+
+    # Return status string
+    echo "${memory},${temp},${ping_ms},${wifi_quality}"
+}
+
+# Send status via WebSocket using websocat (lightweight ws client)
+send_status_websocat() {
+    local status="$1"
+    local message="{\"type\":\"camera_update\",\"data\":\"${status}\"}"
+
+    echo "$message" | timeout 5 websocat -1 "ws://${WEBSOCKET_SERVER}:${WEBSOCKET_PORT}" 2>/dev/null
+}
+
+# Alternative: Send via simple TCP (if websocat not available)
+send_status_curl() {
+    local status="$1"
+
+    # Use HTTP endpoint as fallback
+    curl -s -X POST \
+        "http://${WEBSOCKET_SERVER}:${WEBSOCKET_PORT}/status" \
+        -H "Content-Type: application/json" \
+        -d "{\"type\":\"camera_update\",\"data\":\"${status}\"}" \
+        --max-time 5 2>/dev/null || true
+}
+
+# Simple WebSocket send using bash (no dependencies)
+send_status_bash() {
+    local status="$1"
+    local message="{\"type\":\"camera_update\",\"data\":\"${status}\"}"
+
+    # This requires wscat or similar tool
+    # For now, write to local file and let another service sync
+    echo "$status" > "$STATUS_FILE"
+    echo "$message" > /tmp/ws_message.json
+}
+
+# Main loop
+main() {
+    log_message "Starting WebSocket status sender"
+    log_message "Server: ${WEBSOCKET_SERVER}:${WEBSOCKET_PORT}"
+    log_message "Interval: ${UPDATE_INTERVAL} seconds"
+
+    # Check for websocat
+    local sender_func="send_status_bash"
+    if command -v websocat &>/dev/null; then
+        sender_func="send_status_websocat"
+        log_message "Using websocat for WebSocket"
+    else
+        log_message "websocat not found, using local file method"
+        log_message "Install: wget https://github.com/vi/websocat/releases/download/v1.11.0/websocat.aarch64-unknown-linux-musl -O /usr/local/bin/websocat && chmod +x /usr/local/bin/websocat"
+    fi
+
+    while true; do
+        # Get current status
+        status=$(get_status)
+
+        # Send to WebSocket server
+        if $sender_func "$status"; then
+            # Also save locally
+            echo "$status" > "$STATUS_FILE"
+        else
+            log_message "Failed to send status: $status"
+        fi
+
+        sleep "$UPDATE_INTERVAL"
+    done
+}
+
+# Run
+main
