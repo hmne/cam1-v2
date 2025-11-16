@@ -195,6 +195,10 @@ if (isset($_POST['b1']) && $_POST['b1'] === 'inic') {
     <meta charset="UTF-8">
     <meta name="viewport" content="user-scalable=yes">
     <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="<?= escapeHtml(CAMERA_DISPLAY_NAME) ?>">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="theme-color" content="#1a1a2e">
     <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate, max-age=0">
 
     <link rel="preconnect" href="<?= CAMERA_BASE_URL ?>">
