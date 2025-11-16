@@ -1,0 +1,25 @@
+[Unit]
+Description=Camera WebSocket Server
+After=network.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+Restart=always
+RestartSec=5
+User=root
+WorkingDirectory=/opt/cam-websocket
+ExecStart=/usr/bin/node /opt/cam-websocket/server.js
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=cam-websocket
+
+# Security
+NoNewPrivileges=true
+
+# Environment
+Environment=NODE_ENV=production
+Environment=WS_PORT=8080
+
+[Install]
+WantedBy=multi-user.target

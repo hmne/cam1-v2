@@ -367,5 +367,14 @@ if (isset($_POST['b1']) && $_POST['b1'] === 'inic') {
     <!-- Standard Mode: jQuery-based -->
     <script src="assets/js/camera-control.js?v=<?= file_exists('assets/js/camera-control.js') ? filemtime('assets/js/camera-control.js') : time() ?>"></script>
     <?php endif; ?>
+
+    <?php if (defined('WEBSOCKET_ENABLED') && WEBSOCKET_ENABLED): ?>
+    <!-- WebSocket for Real-time Updates -->
+    <script>
+        // Override WebSocket server URL from config
+        window.WEBSOCKET_SERVER_URL = '<?= escapeHtml(WEBSOCKET_SERVER_URL) ?>';
+    </script>
+    <script src="assets/js/websocket-client.js?v=<?= file_exists('assets/js/websocket-client.js') ? filemtime('assets/js/websocket-client.js') : time() ?>"></script>
+    <?php endif; ?>
 </body>
 </html>
