@@ -101,8 +101,93 @@
         // Memory management
         imageObjects: [],
         isPageVisible: true,
-        lastCacheBuster: 0
+        lastCacheBuster: 0,
+        // Browser notifications
+        previousOnlineStatus: null,
+        notificationsEnabled: false
     };
+
+    // ========================================================================
+    // BROWSER NOTIFICATIONS
+    // ========================================================================
+
+    /**
+     * Request browser notification permission
+     */
+    function requestNotificationPermission() {
+        if (!('Notification' in window)) {
+            console.log(`[${CONFIG.CAM}] Browser does not support notifications`);
+            return;
+        }
+
+        if (Notification.permission === 'granted') {
+            state.notificationsEnabled = true;
+            console.log(`[${CONFIG.CAM}] 🔔 Notifications enabled`);
+        } else if (Notification.permission !== 'denied') {
+            Notification.requestPermission().then(function(permission) {
+                state.notificationsEnabled = (permission === 'granted');
+                console.log(`[${CONFIG.CAM}] 🔔 Notification permission: ${permission}`);
+            });
+        }
+    }
+
+    /**
+     * Send browser notification for status change
+     * @param {string} title - Notification title
+     * @param {string} body - Notification body
+     */
+    function sendBrowserNotification(title, body) {
+        if (!state.notificationsEnabled || Notification.permission !== 'granted') {
+            return;
+        }
+
+        // Don't notify if page is visible and focused
+        if (document.visibilityState === 'visible' && document.hasFocus()) {
+            return;
+        }
+
+        var notification = new Notification(title, {
+            body: body,
+            icon: 'assets/images/logo.ico',
+            tag: CONFIG.CAM + '-status',
+            renotify: true
+        });
+
+        setTimeout(function() {
+            notification.close();
+        }, 10000);
+
+        notification.onclick = function() {
+            window.focus();
+            notification.close();
+        };
+    }
+
+    /**
+     * Check and notify on camera status change
+     * @param {boolean} isOnline - Current online status
+     */
+    function checkStatusAndNotify(isOnline) {
+        if (state.previousOnlineStatus === null) {
+            state.previousOnlineStatus = isOnline;
+            return;
+        }
+
+        if (isOnline !== state.previousOnlineStatus) {
+            if (isOnline) {
+                sendBrowserNotification(
+                    '🟢 ' + CONFIG.CAM + ' Connected',
+                    'Camera is now online and ready'
+                );
+            } else {
+                sendBrowserNotification(
+                    '🔴 ' + CONFIG.CAM + ' Disconnected',
+                    'Camera connection lost! Please check.'
+                );
+            }
+            state.previousOnlineStatus = isOnline;
+        }
+    }
 
     // ========================================================================
     // MEMORY MANAGEMENT
@@ -229,6 +314,9 @@
                 options.timeout = 5000;
             }
         });
+
+        // Request browser notification permission
+        requestNotificationPermission();
 
         $.ajax({
             url: 'tmp/web_live.tmp',
@@ -427,8 +515,12 @@
         const isOnline = window.cameraOnlineStatus || false;
         const secondsSince = window.secondsSinceUpdate || 999;
         const now = Date.now();
+        const isActuallyOnline = isOnline && secondsSince <= CONFIG.OFFLINE_THRESHOLD;
 
-        if (isOnline && secondsSince <= CONFIG.OFFLINE_THRESHOLD) {
+        // Send browser notification if status changed
+        checkStatusAndNotify(isActuallyOnline);
+
+        if (isActuallyOnline) {
             state.lastOnlineTime = now;
 
             if (state.wasLiveBeforeOffline && !state.isLiveActive) {
