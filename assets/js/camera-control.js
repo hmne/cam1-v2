@@ -83,8 +83,109 @@
         currentQuality: null,
         statusRetryCount: 0,
         firstLoad: true,
-        sessionId: null
+        sessionId: null,
+        previousOnlineStatus: null,  // Track previous status for notifications
+        notificationsEnabled: false  // Browser notifications permission
     };
+
+    // ========================================================================
+    // BROWSER NOTIFICATIONS
+    // ========================================================================
+
+    /**
+     * Request browser notification permission
+     */
+    function requestNotificationPermission() {
+        if (!('Notification' in window)) {
+            console.log(`[${CONFIG.CAM}] Browser does not support notifications`);
+            return;
+        }
+
+        if (Notification.permission === 'granted') {
+            state.notificationsEnabled = true;
+            console.log(`[${CONFIG.CAM}] 🔔 Notifications enabled`);
+        } else if (Notification.permission !== 'denied') {
+            Notification.requestPermission().then(function(permission) {
+                state.notificationsEnabled = (permission === 'granted');
+                console.log(`[${CONFIG.CAM}] 🔔 Notification permission: ${permission}`);
+            });
+        }
+    }
+
+    /**
+     * Send browser notification
+     * @param {string} title - Notification title
+     * @param {string} body - Notification body
+     * @param {string} icon - Icon type ('online' or 'offline')
+     */
+    function sendNotification(title, body, icon) {
+        if (!state.notificationsEnabled || Notification.permission !== 'granted') {
+            return;
+        }
+
+        // Don't notify if page is visible/focused
+        if (document.visibilityState === 'visible' && document.hasFocus()) {
+            return;
+        }
+
+        var iconUrl = icon === 'online'
+            ? 'assets/images/logo.ico'
+            : 'assets/images/logo.ico';
+
+        var notification = new Notification(title, {
+            body: body,
+            icon: iconUrl,
+            tag: CONFIG.CAM + '-status',
+            renotify: true,
+            requireInteraction: false
+        });
+
+        // Auto close after 10 seconds
+        setTimeout(function() {
+            notification.close();
+        }, 10000);
+
+        // Focus window when clicked
+        notification.onclick = function() {
+            window.focus();
+            notification.close();
+        };
+
+        console.log(`[${CONFIG.CAM}] 🔔 Notification sent: ${title}`);
+    }
+
+    /**
+     * Check and notify on status change
+     * @param {boolean} isOnline - Current online status
+     */
+    function checkAndNotifyStatusChange(isOnline) {
+        // Skip first load
+        if (state.previousOnlineStatus === null) {
+            state.previousOnlineStatus = isOnline;
+            return;
+        }
+
+        // Check if status changed
+        if (isOnline !== state.previousOnlineStatus) {
+            if (isOnline) {
+                // Camera came online
+                sendNotification(
+                    '🟢 ' + CONFIG.CAM + ' Connected',
+                    'Camera is now online and ready',
+                    'online'
+                );
+            } else {
+                // Camera went offline
+                sendNotification(
+                    '🔴 ' + CONFIG.CAM + ' Disconnected',
+                    'Camera connection lost! Please check.',
+                    'offline'
+                );
+            }
+
+            state.previousOnlineStatus = isOnline;
+        }
+    }
 
     // ========================================================================
     // INITIALIZATION
@@ -112,6 +213,9 @@
                 options.timeout = 5000;
             }
         });
+
+        // Request browser notification permission
+        requestNotificationPermission();
 
         // Check server-side live stream state on page load
         $.ajax({
@@ -339,8 +443,12 @@
         const isOnline = window.cameraOnlineStatus || false;
         const secondsSince = window.secondsSinceUpdate || 999;
         const now = Date.now();
+        const isActuallyOnline = isOnline && secondsSince <= CONFIG.OFFLINE_THRESHOLD;
 
-        if (isOnline && secondsSince <= CONFIG.OFFLINE_THRESHOLD) {
+        // Check and send notification if status changed
+        checkAndNotifyStatusChange(isActuallyOnline);
+
+        if (isActuallyOnline) {
             // Camera is online
             state.lastOnlineTime = now;
 
