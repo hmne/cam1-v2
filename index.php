@@ -224,7 +224,9 @@ if (isset($_POST['b1']) && $_POST['b1'] === 'inic') {
     <!-- Normal Mode: Standard assets -->
     <link rel="stylesheet" href="assets/css/file.css?v=<?= file_exists('assets/css/file.css') ? filemtime('assets/css/file.css') : time() ?>">
     <?php endif; ?>
+    <?php if (!ULTRA_PERFORMANCE): ?>
     <script src="assets/js/jquery-3.7.1.min.js"></script>
+    <?php endif; ?>
 </head>
 <body>
     <?php if (SPEED_MODE): ?>
@@ -358,6 +360,12 @@ if (isset($_POST['b1']) && $_POST['b1'] === 'inic') {
         // Performance settings
         window.ENABLE_PAGE_VISIBILITY = <?= ENABLE_PAGE_VISIBILITY_OPTIMIZATION ? 'true' : 'false' ?>;
     </script>
+    <?php if (ULTRA_PERFORMANCE): ?>
+    <!-- Ultra Performance Mode: No jQuery, Vanilla JS only -->
+    <script src="assets/js/camera-control-ultra.js?v=<?= file_exists('assets/js/camera-control-ultra.js') ? filemtime('assets/js/camera-control-ultra.js') : time() ?>"></script>
+    <?php else: ?>
+    <!-- Standard Mode: jQuery-based -->
     <script src="assets/js/camera-control.js?v=<?= file_exists('assets/js/camera-control.js') ? filemtime('assets/js/camera-control.js') : time() ?>"></script>
+    <?php endif; ?>
 </body>
 </html>
