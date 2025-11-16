@@ -158,6 +158,10 @@ define('ALLOWED_WRITABLE_FILES', array_merge([
     'tmp/timezone.tmp',
     'tmp/camera_heartbeat.tmp',
 
+    // Notification files
+    'tmp/notification_state.tmp',
+    'tmp/previous_online_status.tmp',
+
     // Tunnel URLs
     'tmp/url.tmp',
     'tmp/url2.tmp',
@@ -184,6 +188,28 @@ define('APPEND_MODE_FILES', [
     'log/ping.txt',
     'log/combined.log'
 ]);
+
+// =============================================================================
+// NOTIFICATION SETTINGS
+// =============================================================================
+
+// Enable/Disable Notifications
+define('NOTIFICATIONS_ENABLED', true);
+
+// Telegram Bot Configuration
+define('TELEGRAM_BOT_TOKEN', ''); // Your bot token from @BotFather
+define('TELEGRAM_CHAT_ID', '');   // Your chat ID
+
+// Notification Types
+define('NOTIFY_ON_CONNECT', true);
+define('NOTIFY_ON_DISCONNECT', true);
+define('NOTIFY_ON_ERROR', true);
+
+// Cooldown period between notifications (seconds)
+define('NOTIFICATION_COOLDOWN', 300); // 5 minutes
+
+// Notification state file
+define('NOTIFICATION_STATE_FILE', TMP_DIR . '/notification_state.tmp');
 
 // =============================================================================
 // CAMERA SETTINGS
