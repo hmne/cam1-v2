@@ -37,16 +37,11 @@ readonly DEVICE_ID="${DEVICE_ID,,}"  # Force lowercase
 readonly BASE_URL="http://netstorm.site/${DEVICE_ID}"
 readonly REBOOT_ON_FAIL="${REBOOT_ON_FAIL:-yes}"  # Default: YES for headless
 
-# Exit codes (FIXED: SC2034 - export them)
+# Exit codes
 readonly EXIT_SUCCESS=0 EXIT_WEB_SETUP_FAIL=2 EXIT_SCRIPT_SETUP_FAIL=3 EXIT_CAMERA_FAIL=4
-export EXIT_SUCCESS EXIT_WEB_SETUP_FAIL EXIT_SCRIPT_SETUP_FAIL EXIT_CAMERA_FAIL
 
-# MAC Address (FIXED: SC2188 - use proper conditional)
-if [[ -r /sys/class/net/wlan0/address ]]; then
-    MAC=$(<"/sys/class/net/wlan0/address")
-else
-    MAC="unknown"
-fi
+# MAC Address (direct kernel read)
+MAC=$(< /sys/class/net/wlan0/address 2>/dev/null || echo "unknown")
 readonly MAC
 
 # Service dependency order (MUST load in this sequence)
@@ -104,9 +99,7 @@ log() {
 
 log_web() {
     local level="$1" msg="$2"
-    # FIXED: SC2155 - Declare and assign separately
-    local data
-    data="${level} ${msg} $(TZ=Asia/Kuwait date '+%d/%m %H:%M:%S')"
+    local data="${level} ${msg} $(TZ=Asia/Kuwait date '+%d/%m %H:%M:%S')"
     
     # Single attempt, max 2s timeout - fail silently
     curl -sf --max-time 2 --data-urlencode "file=log/log.txt" \
@@ -119,24 +112,20 @@ log_web() {
 #===============================================================================
 dl_verify() {
     local url=$1 out=$2 expected_size="${3:-100}"  # min size in bytes
-    local attempt
     
     # Download with 3 retries
-    for attempt in {1..3}; do
+    for try in {1..3}; do
         if wget -qO "$out" "$url" 2>/dev/null && [[ -s $out ]]; then
             # Verify minimum size (prevent corrupted files)
             if [[ $(stat -c%s "$out" 2>/dev/null) -ge $expected_size ]]; then
                 return 0
             fi
-            log "WARN" "File too small (attempt $attempt/3): ${out##*/}"
-        else
-            log "WARN" "Download failed (attempt $attempt/3): ${out##*/}"
         fi
         rm -f "$out"
         sleep 0.5
     done
     
-    log "ERROR" "Download failed after 3 attempts: ${out##*/}"
+    log "ERROR" "Download failed: ${out##*/}"
     return 1
 }
 
