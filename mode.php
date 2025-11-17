@@ -229,7 +229,8 @@ $monitorStatus = readFileSecure(MONITOR_STATUS_FILE, 'off');
 $webLiveStatus = readFileSecure(WEB_LIVE_STATUS_FILE, 'off');
 
 // Determine if control panel should be visible
-$showControlPanel = ($isOnline && $monitorStatus === 'off');
+// Show controls when camera is online (regardless of monitor status)
+$showControlPanel = $isOnline;
 
 // =============================================================================
 // HTML OUTPUT
