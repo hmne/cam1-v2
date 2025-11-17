@@ -19,6 +19,7 @@
         CAM: window.CAMERA_NAME || 'Camera',
         STATUS_UPDATE_INTERVAL: 2000,      // 2 sec
         LIVE_UPDATE_INTERVAL: 1000,        // 1 sec (faster updates)
+        LIVE_START_DELAY: 800,             // 800ms delay for camera to start
         CAPTURE_CHECK_INTERVAL: 50,        // 50ms (very fast polling)
         CAPTURE_MAX_WAIT: 15000,           // 15 sec max wait
         OFFLINE_THRESHOLD: 7,
@@ -34,13 +35,17 @@
         statusInterval: null,
         liveInterval: null,
         cleanupInterval: null,
+        sessionHeartbeatInterval: null,
+        sessionId: null,
         isLiveActive: false,
         captureLock: false,
         liveErrorCount: 0,
         imagePool: [],
         previousOnlineStatus: null,
         notificationsEnabled: false,
-        lastImageTimestamp: 0
+        lastImageTimestamp: 0,
+        lastOnlineTime: Date.now(),
+        wasLiveBeforeOffline: false
     };
 
     // ========================================================================
@@ -62,12 +67,17 @@
     // ========================================================================
 
     function cleanupImages() {
-        while (state.imagePool.length > CONFIG.MAX_IMAGE_OBJECTS) {
+        // Only cleanup images that are no longer in use
+        // Don't cleanup during load - wait for onload/onerror to finish
+        const maxImages = CONFIG.MAX_IMAGE_OBJECTS;
+
+        while (state.imagePool.length > maxImages) {
             const oldImg = state.imagePool.shift();
             if (oldImg) {
-                oldImg.onload = null;
-                oldImg.onerror = null;
-                oldImg.src = 'data:,'; // Clear immediately
+                // Only cleanup if handlers are already cleared (image finished loading)
+                if (!oldImg.onload && !oldImg.onerror) {
+                    oldImg.src = 'data:,';
+                }
             }
         }
     }
@@ -75,7 +85,7 @@
     function createImage() {
         const img = new Image();
         state.imagePool.push(img);
-        cleanupImages();
+        // Don't cleanup here - cleanup in background interval only
         return img;
     }
 
@@ -174,28 +184,101 @@
             .then(html => {
                 if (DOM.statusContainer) {
                     DOM.statusContainer.innerHTML = html;
+
+                    // CRITICAL: Execute inline scripts (innerHTML doesn't execute them!)
+                    const scripts = DOM.statusContainer.getElementsByTagName('script');
+                    for (let i = 0; i < scripts.length; i++) {
+                        const oldScript = scripts[i];
+                        const newScript = document.createElement('script');
+                        newScript.text = oldScript.text;
+                        document.head.appendChild(newScript).parentNode.removeChild(newScript);
+                    }
+
                     updateControlPanelVisibility();
                 }
-
-                const isOnline = window.cameraOnlineStatus || false;
-                const secondsSince = window.secondsSinceUpdate || 999;
-                const actuallyOnline = isOnline && secondsSince <= CONFIG.OFFLINE_THRESHOLD;
-
-                checkStatusChange(actuallyOnline);
-
-                // Auto-manage live stream
-                if (!actuallyOnline && state.isLiveActive) {
-                    stopLiveStream();
-                }
+                manageLiveStreamBasedOnStatus();
             })
             .catch(() => {
                 window.cameraOnlineStatus = false;
+                window.secondsSinceUpdate = 999;
+                manageLiveStreamBasedOnStatus();
             });
+    }
+
+    function manageLiveStreamBasedOnStatus() {
+        const isOnline = window.cameraOnlineStatus || false;
+        const secondsSince = window.secondsSinceUpdate || 999;
+        const now = Date.now();
+        const isActuallyOnline = isOnline && secondsSince <= CONFIG.OFFLINE_THRESHOLD;
+
+        // Debug log for troubleshooting
+        if (state.isLiveActive) {
+            console.log('[' + CONFIG.CAM + '] 📊 Status: online=' + isOnline + ', secondsSince=' + secondsSince + ', actuallyOnline=' + isActuallyOnline);
+        }
+
+        // Send browser notification if status changed
+        checkStatusChange(isActuallyOnline);
+
+        if (isActuallyOnline) {
+            state.lastOnlineTime = now;
+
+            // Restart live stream if it was active before going offline
+            if (state.wasLiveBeforeOffline && !state.isLiveActive) {
+                console.log('[' + CONFIG.CAM + '] 🔄 Camera back online - restarting live stream');
+                state.wasLiveBeforeOffline = false;
+                if (DOM.liveSelect) DOM.liveSelect.value = 'on';
+                startLiveStream();
+            }
+        } else {
+            const offlineTime = (now - state.lastOnlineTime) / 1000;
+
+            // Only pause if offline for more than threshold AND live is active
+            if (offlineTime > CONFIG.OFFLINE_THRESHOLD && state.isLiveActive) {
+                console.log('[' + CONFIG.CAM + '] ⏸️ Camera offline for ' + offlineTime.toFixed(0) + 's - pausing live stream');
+                state.wasLiveBeforeOffline = true;
+                stopLiveStreamSilent(); // Silent stop - keep container visible
+            }
+        }
     }
 
     function startStatusMonitoring() {
         updateStatus();
         state.statusInterval = setInterval(updateStatus, CONFIG.STATUS_UPDATE_INTERVAL);
+    }
+
+    // ========================================================================
+    // SESSION HEARTBEAT (Required for camera to keep live active)
+    // ========================================================================
+
+    function sendSessionHeartbeat() {
+        if (!state.isLiveActive || !state.sessionId) return;
+
+        const timestamp = Date.now();
+        const data = timestamp + ':' + state.sessionId;
+
+        postData('index.php', {
+            action: 'write',
+            file: 'tmp/web_live_session.tmp',
+            data: data
+        });
+    }
+
+    function startSessionHeartbeat() {
+        state.sessionId = Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+        sendSessionHeartbeat();
+
+        if (state.sessionHeartbeatInterval) {
+            clearInterval(state.sessionHeartbeatInterval);
+        }
+        state.sessionHeartbeatInterval = setInterval(sendSessionHeartbeat, 10000);
+    }
+
+    function stopSessionHeartbeat() {
+        if (state.sessionHeartbeatInterval) {
+            clearInterval(state.sessionHeartbeatInterval);
+            state.sessionHeartbeatInterval = null;
+        }
+        state.sessionId = null;
     }
 
     // ========================================================================
@@ -210,28 +293,49 @@
     };
 
     function updateLiveImage() {
-        if (!state.isLiveActive || !DOM.liveImage) return;
+        if (!state.isLiveActive || !DOM.liveImage) {
+            return;
+        }
 
-        const img = createImage();
+        // Double check select value
+        if (DOM.liveSelect && DOM.liveSelect.value !== 'on') {
+            stopLiveStream();
+            return;
+        }
+
+        // Create new Image to preload, then assign to visible element
+        const img = new Image();
         const cacheBuster = Date.now() + '_' + Math.random().toString(36).substr(2, 5);
 
         img.onload = function() {
             if (state.isLiveActive && DOM.liveImage) {
+                // Update the visible image with the loaded src
                 DOM.liveImage.src = this.src;
                 state.liveErrorCount = 0;
             }
+            // Clear handler to prevent memory leaks
             this.onload = null;
+            this.onerror = null;
         };
 
         img.onerror = function() {
             state.liveErrorCount++;
-            if (state.liveErrorCount > 5) {
-                stopLiveStream();
+            if (state.liveErrorCount <= 3) {
+                console.warn('[' + CONFIG.CAM + '] ⚠️ Live image load failed (' + state.liveErrorCount + '/15)');
             }
+            // More tolerance for errors (live.jpg may not exist yet)
+            if (state.liveErrorCount > 15) {
+                console.error('[' + CONFIG.CAM + '] ❌ Live stream timeout after 15 failures');
+                // Use silent stop - don't hide container, just pause updates
+                stopLiveStreamSilent();
+            }
+            // Clear handler
+            this.onload = null;
             this.onerror = null;
         };
 
-        img.src = 'live.jpg?v=' + cacheBuster;
+        // Preload the image
+        img.src = 'live.jpg?t=' + cacheBuster;
     }
 
     function startLiveStream() {
@@ -241,35 +345,86 @@
         const preset = QUALITY_PRESETS[quality] || QUALITY_PRESETS['very-low'];
         const qualityString = preset.join(' ');
 
+        console.log('[' + CONFIG.CAM + '] 🎥 Starting live stream...');
+
+        // Start session heartbeat IMMEDIATELY (camera needs this!)
+        state.isLiveActive = true;
+        startSessionHeartbeat();
+
+        // Show container immediately with loading indicator
+        if (DOM.liveContainer) {
+            DOM.liveContainer.style.display = 'block';
+
+            // Add loading indicator
+            if (!document.getElementById('loadingIndicator')) {
+                const liveFeed = document.getElementById('liveFeed');
+                if (liveFeed) {
+                    const loadingDiv = document.createElement('div');
+                    loadingDiv.id = 'loadingIndicator';
+                    loadingDiv.className = 'loading-overlay';
+                    loadingDiv.innerHTML = '<div class="spinner"></div><div class="loading-text">Starting live stream...</div>';
+                    liveFeed.appendChild(loadingDiv);
+                }
+            }
+        }
+        if (DOM.liveImage) {
+            DOM.liveImage.src = 'buffer.jpg'; // Show buffer image while waiting
+        }
+
+        // Send live signal to server
         postData('index.php', {
             action: 'write',
             file: 'tmp/web_live.tmp',
             data: 'on'
+        }).then(function(response) {
+            if (response.trim() === 'OK') {
+                console.log('[' + CONFIG.CAM + '] ▶️ Live stream signal sent, waiting for ' + CONFIG.CAM + '...');
+
+                // Also send quality
+                postData('index.php', {
+                    action: 'write',
+                    file: 'tmp/web_live_quality.tmp',
+                    data: qualityString
+                });
+
+                // Wait for camera to start sending images
+                setTimeout(function() {
+                    // Remove loading indicator
+                    const indicator = document.getElementById('loadingIndicator');
+                    if (indicator) indicator.remove();
+
+                    state.liveErrorCount = 0;
+
+                    // Start fast updates after delay
+                    updateLiveImage();
+                    state.liveInterval = setInterval(updateLiveImage, CONFIG.LIVE_UPDATE_INTERVAL);
+
+                    console.log('[' + CONFIG.CAM + '] 🟢 Live stream started');
+                }, CONFIG.LIVE_START_DELAY);
+            } else {
+                // Remove loading indicator on error
+                const indicator = document.getElementById('loadingIndicator');
+                if (indicator) indicator.remove();
+
+                console.error('[' + CONFIG.CAM + '] ❌ Server rejected: ' + response);
+                stopLiveStream();
+                if (DOM.liveSelect) DOM.liveSelect.value = 'off';
+            }
+        }).catch(function() {
+            // Remove loading indicator on error
+            const indicator = document.getElementById('loadingIndicator');
+            if (indicator) indicator.remove();
+
+            console.error('[' + CONFIG.CAM + '] ❌ Failed to start live stream');
+            stopLiveStream();
+            if (DOM.liveSelect) DOM.liveSelect.value = 'off';
         });
-
-        postData('index.php', {
-            action: 'write',
-            file: 'tmp/web_live_quality.tmp',
-            data: qualityString
-        });
-
-        state.isLiveActive = true;
-        state.liveErrorCount = 0;
-
-        if (DOM.liveContainer) {
-            DOM.liveContainer.style.display = 'block';
-        }
-
-        // Start fast updates
-        updateLiveImage();
-        state.liveInterval = setInterval(updateLiveImage, CONFIG.LIVE_UPDATE_INTERVAL);
-
-        console.log('[' + CONFIG.CAM + '] 🟢 Live stream started');
     }
 
     function stopLiveStream() {
-        if (!state.isLiveActive) return;
+        console.log('[' + CONFIG.CAM + '] 🔴 Stopping live stream...');
 
+        // Always send off signal to server (even if already stopped by timeout)
         postData('index.php', {
             action: 'write',
             file: 'tmp/web_live.tmp',
@@ -277,22 +432,54 @@
         });
 
         state.isLiveActive = false;
+        state.wasLiveBeforeOffline = false; // User explicitly stopped
+        stopSessionHeartbeat();
 
         if (state.liveInterval) {
             clearInterval(state.liveInterval);
             state.liveInterval = null;
         }
 
+        // Remove loading indicator if present
+        const indicator = document.getElementById('loadingIndicator');
+        if (indicator) indicator.remove();
+
+        // Hide live container when stopping
         if (DOM.liveContainer) {
             DOM.liveContainer.style.display = 'none';
         }
 
-        // Clear image to free memory
+        // Clear image to stop showing old frame
         if (DOM.liveImage) {
             DOM.liveImage.src = 'data:,';
         }
 
+        state.liveErrorCount = 0;
         console.log('[' + CONFIG.CAM + '] 🔴 Live stream stopped');
+    }
+
+    // Silent stop - pause updates but keep container visible (for timeout recovery)
+    function stopLiveStreamSilent() {
+        console.log('[' + CONFIG.CAM + '] ⏸️ Live stream paused (timeout)');
+
+        state.isLiveActive = false;
+        stopSessionHeartbeat();
+
+        if (state.liveInterval) {
+            clearInterval(state.liveInterval);
+            state.liveInterval = null;
+        }
+
+        // Remove loading indicator if present
+        const indicator = document.getElementById('loadingIndicator');
+        if (indicator) indicator.remove();
+
+        // Keep container visible, show buffer image
+        if (DOM.liveImage) {
+            DOM.liveImage.src = 'buffer.jpg';
+        }
+
+        state.liveErrorCount = 0;
     }
 
     window.toggleWebLive = function() {
@@ -332,24 +519,56 @@
         const wasLiveActive = state.isLiveActive;
         const beforeTime = Date.now();
 
-        // Stop live stream during capture
+        // Pause live stream during capture (don't hide container)
         if (wasLiveActive) {
-            stopLiveStream();
-            if (DOM.liveSelect) DOM.liveSelect.value = 'off';
+            stopLiveStreamSilent(); // Just pause, keep container visible
+            postData('index.php', {
+                action: 'write',
+                file: 'tmp/web_live.tmp',
+                data: 'off'
+            });
         }
 
         DOM.captureButton.textContent = 'Capturing...';
         DOM.captureButton.disabled = true;
+        DOM.captureButton.classList.add('blinking'); // Add blinking animation
 
-        // Trigger capture
-        postData('index.php', { b1: 'inic' })
-            .then(() => {
+        // Get form values for capture settings
+        const getSelectValue = function(name) {
+            const el = document.querySelector('select[name="' + name + '"]');
+            return el ? el.value : '';
+        };
+
+        // Trigger capture with all camera settings
+        const formData = {
+            res: getSelectValue('res'),
+            comp: getSelectValue('comp'),
+            iso: getSelectValue('iso'),
+            sat: getSelectValue('sat'),
+            rot: getSelectValue('rot'),
+            fx: getSelectValue('fx'),
+            enf: getSelectValue('enf'),
+            b1: 'inic',
+            submit: 'submit'
+        };
+
+        postData('index.php', formData)
+            .then(function(response) {
+                if (response === 'BUSY') {
+                    DOM.captureButton.textContent = originalText;
+                    DOM.captureButton.disabled = false;
+                    DOM.captureButton.classList.remove('blinking');
+                    state.captureLock = false;
+                    alert('Camera is busy. Please wait and try again.');
+                    return;
+                }
                 console.log('[' + CONFIG.CAM + '] 📸 Capture triggered');
                 pollForNewImage(beforeTime, wasLiveActive, originalText);
             })
-            .catch(() => {
+            .catch(function() {
                 DOM.captureButton.textContent = originalText;
                 DOM.captureButton.disabled = false;
+                DOM.captureButton.classList.remove('blinking');
                 state.captureLock = false;
             });
     };
@@ -392,22 +611,54 @@
             // Get size
             fetchText('index.php?get_image_size=1&t=' + Date.now())
                 .then(size => {
-                    const container = document.getElementById('liveImageContainer') ||
-                                     document.getElementById('webLiveContainer');
+                    // Create separate container for captured image (like Normal JS)
+                    let imageContainer = document.getElementById('ImageContainer');
+                    let imageDetails = document.getElementById('imageDetails');
 
-                    if (container) {
-                        container.innerHTML = '<img src="' + this.src + '" style="max-width:100%; border-radius:10px;" />';
-                        container.style.display = 'block';
+                    if (!imageContainer) {
+                        imageContainer = document.createElement('div');
+                        imageContainer.id = 'ImageContainer';
+                        imageContainer.className = 'glass-panel';
+
+                        const capturedImg = document.createElement('img');
+                        capturedImg.id = 'Image';
+                        capturedImg.alt = 'Captured Image';
+                        capturedImg.className = 'captured-image';
+                        imageContainer.appendChild(capturedImg);
+
+                        imageDetails = document.createElement('div');
+                        imageDetails.id = 'imageDetails';
+                        imageDetails.className = 'glass-panel image-details-panel';
+
+                        const sizeText = document.createElement('span');
+                        sizeText.id = 'imageSizeText';
+                        sizeText.className = 'image-size-text';
+                        imageDetails.appendChild(sizeText);
+
+                        // Insert after form panel
+                        const formPanel = document.querySelector('form');
+                        if (formPanel) {
+                            const panel = formPanel.closest('.glass-panel');
+                            if (panel) {
+                                panel.insertAdjacentElement('afterend', imageContainer);
+                                imageContainer.insertAdjacentElement('afterend', imageDetails);
+                            }
+                        }
                     }
 
-                    let details = document.getElementById('imageDetails');
-                    if (!details) {
-                        details = document.createElement('div');
-                        details.id = 'imageDetails';
-                        details.style.cssText = 'text-align:center; margin-top:10px; font-size:14px;';
-                        if (container) container.after(details);
+                    // Update captured image
+                    const capturedImg = document.getElementById('Image');
+                    if (capturedImg) {
+                        capturedImg.src = this.src;
                     }
-                    details.innerHTML = '📷 ' + size + ' | ⏱️ ' + captureTime + 's';
+
+                    const sizeText = document.getElementById('imageSizeText');
+                    if (sizeText) {
+                        sizeText.innerHTML = 'Image size: ' + size + ' <span class="capture-time">Time: ' + captureTime + 's</span> <button onclick="saveImageToDevice()" class="save-btn" title="Save to device (S)">💾</button> <button onclick="extractTextFromImage()" class="ocr-btn" title="Copy text from image (O)">📋</button>';
+                    }
+
+                    imageContainer.style.display = 'block';
+                    imageDetails.style.display = 'block';
                 })
                 .catch(() => {});
 
@@ -421,16 +672,147 @@
         if (DOM.captureButton) {
             DOM.captureButton.textContent = originalText;
             DOM.captureButton.disabled = false;
+            DOM.captureButton.classList.remove('blinking'); // Remove blinking animation
         }
         state.captureLock = false;
 
-        // Restore live stream
+        // Restore live stream if it was active
         if (wasLiveActive) {
-            setTimeout(() => {
+            setTimeout(function() {
                 if (DOM.liveSelect) DOM.liveSelect.value = 'on';
                 startLiveStream();
             }, 500);
         }
+    }
+
+    // ========================================================================
+    // SAVE IMAGE TO DEVICE
+    // ========================================================================
+
+    window.saveImageToDevice = function() {
+        const timestamp = new Date().toISOString().slice(0, 19).replace(/:/g, '-').replace('T', '_');
+        const filename = CONFIG.CAM + '_' + timestamp + '.jpg';
+
+        const link = document.createElement('a');
+        link.href = 'pic.jpg?download=' + Date.now();
+        link.download = filename;
+        link.style.display = 'none';
+
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+
+        console.log('[' + CONFIG.CAM + '] 💾 Saving image as: ' + filename);
+    };
+
+    // ========================================================================
+    // OCR - EXTRACT TEXT FROM IMAGE
+    // ========================================================================
+
+    window.extractTextFromImage = function() {
+        const button = document.querySelector('.ocr-btn');
+        if (!button) return;
+
+        const originalContent = button.innerHTML;
+
+        button.disabled = true;
+        button.innerHTML = '⏳';
+        button.classList.add('loading');
+        console.log('[' + CONFIG.CAM + '] 📋 Extracting text from image...');
+
+        fetch('ocr.php', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: 'image=pic.jpg'
+        })
+        .then(r => r.json())
+        .then(data => {
+            if (data.success && data.hasText) {
+                copyToClipboard(data.text)
+                    .then(() => {
+                        button.innerHTML = '✅';
+                        button.classList.remove('loading');
+                        console.log('[' + CONFIG.CAM + '] ✅ Text copied (' + data.charCount + ' chars)');
+                        showNotification('Text copied! (' + data.charCount + ' chars)');
+                        setTimeout(() => {
+                            button.disabled = false;
+                            button.innerHTML = originalContent;
+                        }, 2000);
+                    })
+                    .catch(err => {
+                        button.innerHTML = '❌';
+                        button.classList.remove('loading');
+                        showNotification('Failed to copy text');
+                        setTimeout(() => {
+                            button.disabled = false;
+                            button.innerHTML = originalContent;
+                        }, 2000);
+                    });
+            } else if (data.success && !data.hasText) {
+                button.innerHTML = '⚠️';
+                button.classList.remove('loading');
+                showNotification('No text found in image');
+                setTimeout(() => {
+                    button.disabled = false;
+                    button.innerHTML = originalContent;
+                }, 2000);
+            } else {
+                button.innerHTML = '❌';
+                button.classList.remove('loading');
+                showNotification('Error: ' + (data.error || 'Unknown'));
+                setTimeout(() => {
+                    button.disabled = false;
+                    button.innerHTML = originalContent;
+                }, 2000);
+            }
+        })
+        .catch(() => {
+            button.innerHTML = '❌';
+            button.classList.remove('loading');
+            showNotification('OCR service unavailable');
+            setTimeout(() => {
+                button.disabled = false;
+                button.innerHTML = originalContent;
+            }, 2000);
+        });
+    };
+
+    function copyToClipboard(text) {
+        if (navigator.clipboard && window.isSecureContext) {
+            return navigator.clipboard.writeText(text);
+        }
+        return new Promise((resolve, reject) => {
+            const textArea = document.createElement('textarea');
+            textArea.value = text;
+            textArea.style.cssText = 'position:fixed;left:-999999px;top:-999999px;';
+            document.body.appendChild(textArea);
+            textArea.focus();
+            textArea.select();
+            try {
+                const ok = document.execCommand('copy');
+                document.body.removeChild(textArea);
+                ok ? resolve() : reject('Copy failed');
+            } catch (err) {
+                document.body.removeChild(textArea);
+                reject(err);
+            }
+        });
+    }
+
+    function showNotification(message) {
+        const existing = document.querySelector('.ocr-notification');
+        if (existing) existing.remove();
+
+        const n = document.createElement('div');
+        n.className = 'ocr-notification';
+        n.textContent = message;
+        document.body.appendChild(n);
+
+        setTimeout(() => n.classList.add('show'), 10);
+        setTimeout(() => {
+            n.classList.remove('show');
+            setTimeout(() => n.remove(), 300);
+        }, 3000);
     }
 
     // ========================================================================
@@ -446,6 +828,24 @@
         if (e.keyCode === 32) {
             e.preventDefault();
             window.captureImage();
+        }
+
+        // C = Capture
+        if (e.keyCode === 67) {
+            e.preventDefault();
+            window.captureImage();
+        }
+
+        // S = Save
+        if (e.keyCode === 83) {
+            e.preventDefault();
+            window.saveImageToDevice();
+        }
+
+        // O = OCR
+        if (e.keyCode === 79) {
+            e.preventDefault();
+            window.extractTextFromImage();
         }
 
         // L = Toggle Live
@@ -469,7 +869,15 @@
         if (rebootBtn) {
             rebootBtn.onclick = function() {
                 if (confirm('Reboot camera system?')) {
-                    fetch('admin/reboot.php?token=' + window.ADMIN_TOKEN);
+                    fetch('admin/reboot.php?token=' + window.ADMIN_TOKEN)
+                        .then(function(r) { return r.text(); })
+                        .then(function(text) {
+                            alert('Reboot command sent: ' + text);
+                            console.log('[' + CONFIG.CAM + '] 🔄 Reboot: ' + text);
+                        })
+                        .catch(function() {
+                            alert('Failed to send reboot command');
+                        });
                 }
             };
         }
@@ -477,7 +885,15 @@
         if (shutdownBtn) {
             shutdownBtn.onclick = function() {
                 if (confirm('Shutdown camera system?')) {
-                    fetch('admin/shutdown.php?token=' + window.ADMIN_TOKEN);
+                    fetch('admin/shutdown.php?token=' + window.ADMIN_TOKEN)
+                        .then(function(r) { return r.text(); })
+                        .then(function(text) {
+                            alert('Shutdown command sent: ' + text);
+                            console.log('[' + CONFIG.CAM + '] ⏹️ Shutdown: ' + text);
+                        })
+                        .catch(function() {
+                            alert('Failed to send shutdown command');
+                        });
                 }
             };
         }
@@ -485,7 +901,15 @@
         if (clearBtn) {
             clearBtn.onclick = function() {
                 if (confirm('Clear temporary files?')) {
-                    fetch('admin/clear.php?token=' + window.ADMIN_TOKEN);
+                    fetch('admin/clear.php?token=' + window.ADMIN_TOKEN)
+                        .then(function(r) { return r.text(); })
+                        .then(function(text) {
+                            alert('Files cleared: ' + text);
+                            console.log('[' + CONFIG.CAM + '] 🧹 Clear: ' + text);
+                        })
+                        .catch(function() {
+                            alert('Failed to clear files');
+                        });
                 }
             };
         }

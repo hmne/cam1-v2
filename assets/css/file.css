@@ -35,26 +35,27 @@
 
 /* زر حفظ الصورة */
 .save-btn {
-    background: linear-gradient(135deg, #4CAF50, #45a049);
-    border: none;
-    border-radius: 8px;
-    padding: 6px 12px;
-    margin-left: 15px;
+    display: inline !important;
+    background: transparent !important;
+    border: none !important;
+    padding: 0 4px !important;
+    width: auto !important;
+    margin: 0 !important;
+    margin-left: 8px !important;
     font-size: 18px;
     cursor: pointer;
-    transition: all 0.3s ease;
-    box-shadow: 0 2px 8px rgba(76, 175, 80, 0.3);
+    transition: transform 0.2s ease;
+    vertical-align: middle;
+    border-radius: 0 !important;
+    text-shadow: none !important;
 }
 
 .save-btn:hover {
-    background: linear-gradient(135deg, #45a049, #3d8b40);
-    transform: translateY(-2px);
-    box-shadow: 0 4px 12px rgba(76, 175, 80, 0.5);
+    transform: scale(1.2);
 }
 
 .save-btn:active {
-    transform: translateY(0);
-    box-shadow: 0 2px 4px rgba(76, 175, 80, 0.3);
+    transform: scale(0.95);
 }
 
 /* رسالة الكاميرا غير متصلة */
