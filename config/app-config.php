@@ -68,8 +68,14 @@ define('CAMERA_BASE_URL', 'http://netstorm.site/' . CAMERA_ID);
 // SPEED_MODE: true = static background image only (faster), false = video background (slower)
 define('SPEED_MODE', false);
 
-// ULTRA_PERFORMANCE: true = Vanilla JS (no jQuery, faster), false = jQuery version
-define('ULTRA_PERFORMANCE', true);
+// JS_MODE: JavaScript engine to use
+// 'normal' = jQuery-based (camera-control.js) - Most compatible
+// 'fast'   = Vanilla JS (camera-control-vanilla.js) - Faster, no jQuery
+// 'ultra'  = Ultra Performance (camera-control-ultra.js) - Fastest, aggressive optimization
+define('JS_MODE', 'normal');
+
+// Backward compatibility - DO NOT USE, use JS_MODE instead
+define('ULTRA_PERFORMANCE', JS_MODE === 'ultra');
 
 // WEBSOCKET_ENABLED: true = Use WebSocket for real-time updates, false = HTTP polling
 // Requires WebSocket server running on VPS (see websocket/INSTALL.md)

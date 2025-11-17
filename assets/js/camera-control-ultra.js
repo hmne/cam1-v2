@@ -154,6 +154,17 @@
         }
     }
 
+    function updateControlPanelVisibility() {
+        const stateElement = document.getElementById('controlPanelState');
+        if (stateElement) {
+            const shouldShow = stateElement.getAttribute('data-show-panel') === 'true';
+            const form = document.getElementById('myForm');
+            if (form) {
+                form.style.display = shouldShow ? 'block' : 'none';
+            }
+        }
+    }
+
     // ========================================================================
     // STATUS MONITORING
     // ========================================================================
@@ -163,6 +174,7 @@
             .then(html => {
                 if (DOM.statusContainer) {
                     DOM.statusContainer.innerHTML = html;
+                    updateControlPanelVisibility();
                 }
 
                 const isOnline = window.cameraOnlineStatus || false;
