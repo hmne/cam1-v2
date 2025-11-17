@@ -168,7 +168,7 @@ test_cam() {
     fi
     
     # Capture test image (critical operation)
-    local temp_img="/tmp/camera_test_$$.jpg"
+    local temp_img="/tmp/tes.jpg"
     
     if raspistill -n -t 500 -q 10 -o "$temp_img" -a 1020 2>/dev/null && [[ -s $temp_img ]]; then
         # Optimize and upload
