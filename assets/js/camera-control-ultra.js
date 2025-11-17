@@ -19,7 +19,7 @@
         CAM: window.CAMERA_NAME || 'Camera',
         STATUS_UPDATE_INTERVAL: 2000,      // 2 sec
         LIVE_UPDATE_INTERVAL: 1000,        // 1 sec (faster updates)
-        LIVE_START_DELAY: 800,             // 800ms delay for Pi to start
+        LIVE_START_DELAY: 800,             // 800ms delay for camera to start
         CAPTURE_CHECK_INTERVAL: 50,        // 50ms (very fast polling)
         CAPTURE_MAX_WAIT: 15000,           // 15 sec max wait
         OFFLINE_THRESHOLD: 7,
@@ -247,7 +247,7 @@
     }
 
     // ========================================================================
-    // SESSION HEARTBEAT (Required for Pi to keep live active)
+    // SESSION HEARTBEAT (Required for camera to keep live active)
     // ========================================================================
 
     function sendSessionHeartbeat() {
@@ -347,7 +347,7 @@
 
         console.log('[' + CONFIG.CAM + '] 🎥 Starting live stream...');
 
-        // Start session heartbeat IMMEDIATELY (Pi needs this!)
+        // Start session heartbeat IMMEDIATELY (camera needs this!)
         state.isLiveActive = true;
         startSessionHeartbeat();
 
@@ -378,7 +378,7 @@
             data: 'on'
         }).then(function(response) {
             if (response.trim() === 'OK') {
-                console.log('[' + CONFIG.CAM + '] ▶️ Live stream signal sent, waiting for Pi...');
+                console.log('[' + CONFIG.CAM + '] ▶️ Live stream signal sent, waiting for ' + CONFIG.CAM + '...');
 
                 // Also send quality
                 postData('index.php', {
@@ -387,7 +387,7 @@
                     data: qualityString
                 });
 
-                // Wait for Raspberry Pi to start sending images
+                // Wait for camera to start sending images
                 setTimeout(function() {
                     // Remove loading indicator
                     const indicator = document.getElementById('loadingIndicator');
