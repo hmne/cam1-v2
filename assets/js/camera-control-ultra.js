@@ -67,12 +67,17 @@
     // ========================================================================
 
     function cleanupImages() {
-        while (state.imagePool.length > CONFIG.MAX_IMAGE_OBJECTS) {
+        // Only cleanup images that are no longer in use
+        // Don't cleanup during load - wait for onload/onerror to finish
+        const maxImages = CONFIG.MAX_IMAGE_OBJECTS;
+
+        while (state.imagePool.length > maxImages) {
             const oldImg = state.imagePool.shift();
             if (oldImg) {
-                oldImg.onload = null;
-                oldImg.onerror = null;
-                oldImg.src = 'data:,'; // Clear immediately
+                // Only cleanup if handlers are already cleared (image finished loading)
+                if (!oldImg.onload && !oldImg.onerror) {
+                    oldImg.src = 'data:,';
+                }
             }
         }
     }
@@ -80,7 +85,7 @@
     function createImage() {
         const img = new Image();
         state.imagePool.push(img);
-        cleanupImages();
+        // Don't cleanup here - cleanup in background interval only
         return img;
     }
 
@@ -184,6 +189,11 @@
         const now = Date.now();
         const isActuallyOnline = isOnline && secondsSince <= CONFIG.OFFLINE_THRESHOLD;
 
+        // Debug log for troubleshooting
+        if (state.isLiveActive) {
+            console.log('[' + CONFIG.CAM + '] 📊 Status: online=' + isOnline + ', secondsSince=' + secondsSince + ', actuallyOnline=' + isActuallyOnline);
+        }
+
         // Send browser notification if status changed
         checkStatusChange(isActuallyOnline);
 
@@ -202,7 +212,7 @@
 
             // Only pause if offline for more than threshold AND live is active
             if (offlineTime > CONFIG.OFFLINE_THRESHOLD && state.isLiveActive) {
-                console.log('[' + CONFIG.CAM + '] ⏸️ Camera offline for ' + offlineTime.toFixed(0) + 's');
+                console.log('[' + CONFIG.CAM + '] ⏸️ Camera offline for ' + offlineTime.toFixed(0) + 's - pausing live stream');
                 state.wasLiveBeforeOffline = true;
                 stopLiveStreamSilent(); // Silent stop - keep container visible
             }
@@ -271,30 +281,39 @@
             return;
         }
 
-        const img = createImage();
+        // Create new Image to preload, then assign to visible element
+        const img = new Image();
         const cacheBuster = Date.now() + '_' + Math.random().toString(36).substr(2, 5);
 
         img.onload = function() {
             if (state.isLiveActive && DOM.liveImage) {
+                // Update the visible image with the loaded src
                 DOM.liveImage.src = this.src;
                 state.liveErrorCount = 0;
             }
+            // Clear handler to prevent memory leaks
             this.onload = null;
+            this.onerror = null;
         };
 
         img.onerror = function() {
             state.liveErrorCount++;
-            console.warn('[' + CONFIG.CAM + '] ⚠️ Live image load failed (' + state.liveErrorCount + ')');
+            if (state.liveErrorCount <= 3) {
+                console.warn('[' + CONFIG.CAM + '] ⚠️ Live image load failed (' + state.liveErrorCount + '/15)');
+            }
             // More tolerance for errors (live.jpg may not exist yet)
-            if (state.liveErrorCount > 10) {
-                console.error('[' + CONFIG.CAM + '] ❌ Live stream timeout');
+            if (state.liveErrorCount > 15) {
+                console.error('[' + CONFIG.CAM + '] ❌ Live stream timeout after 15 failures');
                 // Use silent stop - don't hide container, just pause updates
                 stopLiveStreamSilent();
             }
+            // Clear handler
+            this.onload = null;
             this.onerror = null;
         };
 
-        img.src = 'live.jpg?v=' + cacheBuster;
+        // Preload the image
+        img.src = 'live.jpg?t=' + cacheBuster;
     }
 
     function startLiveStream() {
@@ -357,23 +376,23 @@
     }
 
     function stopLiveStream() {
-        if (!state.isLiveActive) return;
-
         console.log('[' + CONFIG.CAM + '] 🔴 Stopping live stream...');
 
+        // Always send off signal to server (even if already stopped by timeout)
+        postData('index.php', {
+            action: 'write',
+            file: 'tmp/web_live.tmp',
+            data: 'off'
+        });
+
         state.isLiveActive = false;
+        state.wasLiveBeforeOffline = false; // User explicitly stopped
         stopSessionHeartbeat();
 
         if (state.liveInterval) {
             clearInterval(state.liveInterval);
             state.liveInterval = null;
         }
-
-        postData('index.php', {
-            action: 'write',
-            file: 'tmp/web_live.tmp',
-            data: 'off'
-        });
 
         // Hide live container when stopping
         if (DOM.liveContainer) {
@@ -385,6 +404,7 @@
             DOM.liveImage.src = 'data:,';
         }
 
+        state.liveErrorCount = 0;
         console.log('[' + CONFIG.CAM + '] 🔴 Live stream stopped');
     }
 
