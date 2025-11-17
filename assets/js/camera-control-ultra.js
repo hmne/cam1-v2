@@ -173,6 +173,14 @@
             .then(html => {
                 if (DOM.statusContainer) {
                     DOM.statusContainer.innerHTML = html;
+
+                    // CRITICAL: Execute inline scripts (innerHTML doesn't execute them!)
+                    const scripts = DOM.statusContainer.querySelectorAll('script');
+                    scripts.forEach(function(oldScript) {
+                        const newScript = document.createElement('script');
+                        newScript.textContent = oldScript.textContent;
+                        oldScript.parentNode.replaceChild(newScript, oldScript);
+                    });
                 }
                 manageLiveStreamBasedOnStatus();
             })
