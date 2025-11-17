@@ -33,9 +33,11 @@ for cmd in curl wget vcgencmd raspistill jq; do
     }
 done
 
-# Verify network connectivity to server (1 second timeout)
-if ! curl -sf --max-time 1 "${BASE_URL}/storage.php" >/dev/null 2>&1; then
-    printf '[%s] [CRITICAL] Cannot reach %s\n' "$(date '+%H:%M:%S')" "$BASE_URL" >&2
+# Verify network connectivity to server (check if server responds)
+# Note: storage.php returns 400 without POST data, so we just check HTTP code is numeric
+http_code=$(curl -s --max-time 3 -o /dev/null -w "%{http_code}" "${BASE_URL}/" 2>/dev/null || echo "000")
+if [[ ! "$http_code" =~ ^[0-9]+$ ]] || [[ "$http_code" == "000" ]]; then
+    printf '[%s] [CRITICAL] Cannot reach %s (HTTP: %s)\n' "$(date '+%H:%M:%S')" "$BASE_URL" "$http_code" >&2
     sleep 5 && reboot -f  # Wait 5s for network to stabilize
 fi
 readonly REBOOT_ON_FAIL="${REBOOT_ON_FAIL:-yes}"  # Default: YES for headless
