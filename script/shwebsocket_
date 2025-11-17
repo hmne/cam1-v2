@@ -1,224 +1,338 @@
 #!/usr/bin/env bash
+
 #===============================================================================
-# WEBSOCKET CLIENT - Optional Real-time Communication
-#
-# This script is OPTIONAL. If not present or fails, system uses HTTP mode.
-# Follows same pattern as main.sh, sync.sh, monitor.sh
-#
-# To enable: Set WS_SERVER environment variable in boot.sh
-# To disable: Don't set WS_SERVER (or set to empty)
+# WEBSOCKET CLIENT - Real-time Camera Communication
+# Optional: If WS_SERVER not set, exits cleanly (no impact on system)
 #===============================================================================
-set -euo pipefail
-IFS=$'\n\t'
+set -Eeuo pipefail
+
 
 #===============================================================================
 # CONFIG
 #===============================================================================
 readonly DEVICE_ID="${DEVICE_ID:-cam1}"
 readonly BASE_URL="${BASE_URL:-http://netstorm.site/${DEVICE_ID}}"
-readonly WS_SERVER="${WS_SERVER:-}"  # Empty = disabled
+readonly WS_SERVER="${WS_SERVER:-}"  # Set in boot.sh to enable
 readonly HEARTBEAT_SEC=3
+readonly MAX_RECONNECT_DELAY=30
 
-# Paths (same as other scripts)
-readonly TMP_DIR="/var/tmp"
+# File paths (same as other scripts)
+readonly STATUS_FILE="/var/tmp/status.tmp"
+readonly VAR_FILE="/var/tmp/var.tmp"
+readonly PIC_FILE="/var/tmp/pic.jpg"
+readonly LIVE_FILE="/var/tmp/web_live.tmp"
 readonly LOG_FILE="/var/log/websocket.log"
-readonly STATUS_FILE="${TMP_DIR}/status.tmp"
-readonly VAR_FILE="${TMP_DIR}/var.tmp"
-readonly PIC_FILE="${TMP_DIR}/pic.jpg"
-readonly LIVE_FILE="${TMP_DIR}/web_live.tmp"
+
+# Export for consistency
+export DEVICE_ID BASE_URL
+
 
 #===============================================================================
-# SAFETY CHECK - Exit cleanly if not enabled
+# PRE-CHECK: Exit cleanly if not enabled
 #===============================================================================
 [[ -z "$WS_SERVER" ]] && {
-    echo "WebSocket disabled (WS_SERVER not set) - using HTTP mode"
+    printf '[%s] WebSocket disabled (WS_SERVER not set)\n' "$(date '+%H:%M:%S')"
     exit 0
 }
 
-command -v websocat &>/dev/null || {
-    echo "websocat not installed - using HTTP mode"
-    exit 0
+
+#===============================================================================
+# TRAP HANDLERS
+#===============================================================================
+cleanup() {
+    local exit_code=${1:-$?}
+
+    # Kill background jobs
+    jobs -p 2>/dev/null | xargs -r kill 2>/dev/null || :
+
+    exit "$exit_code"
 }
+
+
+err_trap() {
+    local exit_code=$? line="${BASH_LINENO[0]}" func="${FUNCNAME[1]:-main}"
+    printf '[ERROR] %s:%s (exit %d)\n' "$func" "$line" "$exit_code" >&2
+}
+
+
+trap 'cleanup $?' EXIT INT TERM
+trap err_trap ERR
+
 
 #===============================================================================
 # LOGGING
 #===============================================================================
 log() {
-    local msg="[$(date '+%H:%M:%S')] $1"
-    echo "$msg"
-    echo "$msg" >> "$LOG_FILE" 2>/dev/null || true
+    printf '[%s] [%s] %s\n' "$(date '+%H:%M:%S')" "$1" "$2"
 }
+
+
+log_file() {
+    local msg="$1"
+    printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$msg" >> "$LOG_FILE" 2>/dev/null || :
+}
+
+
+#===============================================================================
+# AUTO-INSTALL WEBSOCAT (one-time only)
+#===============================================================================
+ensure_websocat() {
+    # Already installed? Skip
+    command -v websocat &>/dev/null && return 0
+
+    log "INFO" "Installing websocat (one-time setup)..."
+
+    local arch url
+    arch=$(uname -m)
+
+    case "$arch" in
+        aarch64|arm64)
+            url="https://github.com/vi/websocat/releases/download/v1.11.0/websocat.aarch64-unknown-linux-musl"
+            ;;
+        armv7l|armhf)
+            url="https://github.com/vi/websocat/releases/download/v1.11.0/websocat.arm-unknown-linux-musleabihf"
+            ;;
+        armv6l)
+            url="https://github.com/vi/websocat/releases/download/v1.11.0/websocat.arm-unknown-linux-musleabi"
+            ;;
+        *)
+            log "ERROR" "Unsupported architecture: $arch"
+            return 1
+            ;;
+    esac
+
+    # Download to temp first
+    local tmp_file="/tmp/websocat_$$"
+    if wget -q "$url" -O "$tmp_file" 2>/dev/null; then
+        chmod +x "$tmp_file"
+        mv "$tmp_file" /usr/local/bin/websocat
+        log "INFO" "websocat installed successfully"
+        return 0
+    else
+        rm -f "$tmp_file"
+        log "ERROR" "Failed to download websocat"
+        return 1
+    fi
+}
+
 
 #===============================================================================
 # SYSTEM STATUS (same as monitor.sh)
 #===============================================================================
-get_status() {
+get_system_status() {
     local mem temp ping wifi
 
+    # Memory
     mem=$(free -m 2>/dev/null | awk '/Mem:/ {printf "%.0f%%", $3/$2*100}' || echo "N/A")
 
+    # Temperature
     if [[ -f /sys/class/thermal/thermal_zone0/temp ]]; then
         temp=$(awk '{printf "%.1fC", $1/1000}' /sys/class/thermal/thermal_zone0/temp 2>/dev/null || echo "N/A")
     else
         temp="N/A"
     fi
 
+    # Ping (fast check)
     ping=$(ping -c 1 -W 2 8.8.8.8 2>/dev/null | grep -oP 'time=\K[\d.]+' || echo "N/A")
     [[ "$ping" != "N/A" ]] && ping="${ping}ms"
 
+    # WiFi signal
     wifi=$(iwconfig 2>/dev/null | grep -oP 'Link Quality=\K\d+/\d+' || echo "")
     if [[ -n "$wifi" ]]; then
-        local n d
-        n=${wifi%/*}
-        d=${wifi#*/}
+        local n="${wifi%/*}" d="${wifi#*/}"
         wifi=$(awk "BEGIN {printf \"%.0f%%\", ($n/$d)*100}")
     else
         wifi="N/A"
     fi
 
-    echo "${mem},${temp},${ping},${wifi}"
+    printf '%s,%s,%s,%s' "$mem" "$temp" "$ping" "$wifi"
 }
 
-#===============================================================================
-# CAPTURE IMAGE (same logic as main.sh)
-#===============================================================================
-do_capture() {
-    local id="$1"
-    local start_ms
-    start_ms=$(date +%s%3N)
 
-    log "Capture: $id"
+#===============================================================================
+# CAMERA CAPTURE (same logic as main.sh)
+#===============================================================================
+capture_image() {
+    local capture_id="$1"
+    local start_ms duration
+
+    start_ms=$(date +%s%3N)
+    log "INFO" "Capture: $capture_id"
+    log_file "Capture started: $capture_id"
 
     # Read settings (same format as main.sh)
-    local w=1920 h=1080 q=75 r=0
+    local w=1920 h=1080 q=75 rot=0
     if [[ -f "$VAR_FILE" ]]; then
-        local -a s
-        read -r -a s < "$VAR_FILE" 2>/dev/null || true
-        case "${s[0]:-1}" in
+        local -a settings
+        read -r -a settings < "$VAR_FILE" 2>/dev/null || :
+
+        case "${settings[0]:-1}" in
             1) w=1280; h=960 ;;
             2) w=1920; h=1080 ;;
             3) w=2592; h=1944 ;;
             4) w=3200; h=2400 ;;
         esac
-        q=$((100 - ${s[1]:-25}))
-        r="${s[4]:-0}"
+
+        q=$((100 - ${settings[1]:-25}))
+        rot="${settings[4]:-0}"
     fi
 
-    # Capture
-    if ! raspistill -w "$w" -h "$h" -q "$q" -rot "$r" -t 1 -n -o "$PIC_FILE" 2>/dev/null; then
-        log "raspistill failed"
+    # Capture image
+    if ! raspistill -w "$w" -h "$h" -q "$q" -rot "$rot" -t 1 -n -o "$PIC_FILE" 2>/dev/null; then
+        log "ERROR" "raspistill failed"
+        log_file "Capture failed: raspistill"
         return 1
     fi
 
     # Upload via curl (same as sync.sh)
     if ! curl -sf -F "upfile=@${PIC_FILE}" "${BASE_URL}/storage.php" -m 30 >/dev/null 2>&1; then
-        log "Upload failed"
+        log "ERROR" "Upload failed"
+        log_file "Capture failed: upload"
         return 1
     fi
 
-    local duration=$(( $(date +%s%3N) - start_ms ))
-    log "Capture done: ${duration}ms"
+    duration=$(( $(date +%s%3N) - start_ms ))
+    log "INFO" "Capture done: ${duration}ms"
+    log_file "Capture complete: ${capture_id} (${duration}ms)"
 
-    # Send response
-    echo "{\"type\":\"capture_done\",\"id\":\"$id\",\"url\":\"pic.jpg\",\"duration\":$duration}"
+    # Return result as JSON
+    printf '{"type":"capture_done","id":"%s","url":"pic.jpg","duration":%d}' "$capture_id" "$duration"
 }
+
 
 #===============================================================================
 # MESSAGE HANDLER
 #===============================================================================
-handle_msg() {
+handle_message() {
     local msg="$1"
-    local type
-    type=$(echo "$msg" | grep -oP '"type"\s*:\s*"\K[^"]+' || echo "")
+    local msg_type
 
-    case "$type" in
+    # Extract type from JSON
+    msg_type=$(printf '%s' "$msg" | grep -oP '"type"\s*:\s*"\K[^"]+' || echo "")
+
+    case "$msg_type" in
         capture)
             local cid
-            cid=$(echo "$msg" | grep -oP '"id"\s*:\s*"\K[^"]+' || date +%s)
-            do_capture "$cid" || echo "{\"type\":\"capture_error\"}"
+            cid=$(printf '%s' "$msg" | grep -oP '"id"\s*:\s*"\K[^"]+' || date +%s)
+            capture_image "$cid" || printf '{"type":"capture_error"}'
             ;;
 
         settings)
             local data
-            data=$(echo "$msg" | grep -oP '"data"\s*:\s*"\K[^"]+' || echo "")
-            [[ -n "$data" ]] && echo "$data" > "$VAR_FILE"
-            log "Settings updated"
+            data=$(printf '%s' "$msg" | grep -oP '"data"\s*:\s*"\K[^"]+' || echo "")
+            [[ -n "$data" ]] && printf '%s\n' "$data" > "$VAR_FILE"
+            log "INFO" "Settings updated"
             ;;
 
         live_start)
-            echo "on" > "$LIVE_FILE"
-            log "Live stream started"
+            printf 'on\n' > "$LIVE_FILE"
+            log "INFO" "Live stream enabled"
+            printf '{"type":"live_status","active":true}'
             ;;
 
         live_stop)
-            echo "off" > "$LIVE_FILE"
-            log "Live stream stopped"
+            printf 'off\n' > "$LIVE_FILE"
+            log "INFO" "Live stream disabled"
+            printf '{"type":"live_status","active":false}'
+            ;;
+
+        *)
+            [[ -n "$msg_type" ]] && log "WARN" "Unknown message type: $msg_type"
             ;;
     esac
 }
 
+
 #===============================================================================
-# HEARTBEAT (background process)
+# HEARTBEAT SENDER (background)
 #===============================================================================
 send_heartbeats() {
     while true; do
-        local s
-        s=$(get_status)
-        echo "{\"type\":\"heartbeat\",\"data\":\"$s\"}"
-        echo "$s" > "$STATUS_FILE" 2>/dev/null || true
+        local status
+        status=$(get_system_status)
+
+        # Send to WebSocket
+        printf '{"type":"heartbeat","data":"%s"}\n' "$status"
+
+        # Also update local file (for compatibility)
+        printf '%s\n' "$status" > "$STATUS_FILE" 2>/dev/null || :
+
         sleep "$HEARTBEAT_SEC"
     done
 }
+
 
 #===============================================================================
 # WEBSOCKET CONNECTION
 #===============================================================================
 ws_connect() {
-    log "Connecting to $WS_SERVER"
+    log "INFO" "Connecting to $WS_SERVER"
+    log_file "Connecting to $WS_SERVER"
 
-    # Start heartbeat sender
-    send_heartbeats | {
+    # Create named pipe for bidirectional communication
+    local fifo="/tmp/ws_fifo_$$"
+    rm -f "$fifo"
+    mkfifo "$fifo"
+
+    # Cleanup on exit
+    trap "rm -f '$fifo'" RETURN
+
+    # Start heartbeat sender in background
+    send_heartbeats > "$fifo" &
+    local hb_pid=$!
+
+    # Connect to WebSocket server
+    {
         # First message: identify as camera
-        echo '{"type":"identify","role":"camera"}'
+        printf '{"type":"identify","role":"camera"}\n'
 
         # Forward heartbeats
-        cat
-    } | websocat -t "ws://${WS_SERVER}" 2>/dev/null | while read -r line; do
+        cat "$fifo"
+    } | websocat -t "ws://${WS_SERVER}" 2>/dev/null | while IFS= read -r line; do
         # Handle incoming commands
-        response=$(handle_msg "$line" 2>/dev/null)
-        [[ -n "$response" ]] && echo "$response"
+        local response
+        response=$(handle_message "$line")
+        [[ -n "$response" ]] && printf '%s\n' "$response"
     done
 
-    return 1  # Connection closed
+    # Kill heartbeat sender
+    kill "$hb_pid" 2>/dev/null || :
+    wait "$hb_pid" 2>/dev/null || :
+
+    log "WARN" "Connection closed"
+    log_file "Disconnected from $WS_SERVER"
+    return 1
 }
 
+
 #===============================================================================
-# MAIN LOOP
+# MAIN
 #===============================================================================
 main() {
-    log "Starting WebSocket client for ${DEVICE_ID}"
-    log "Server: ${WS_SERVER}"
+    log "INFO" "WebSocket client starting for $DEVICE_ID"
+    log "INFO" "Server: $WS_SERVER"
+    log_file "Starting WebSocket client"
 
-    # Retry with backoff
+    # Install websocat if not present (one-time)
+    if ! ensure_websocat; then
+        log "ERROR" "Cannot install websocat - falling back to HTTP mode"
+        exit 0  # Exit cleanly, system continues with HTTP
+    fi
+
+    # Reconnection loop with exponential backoff
     local delay=2
     while true; do
         if ws_connect; then
-            delay=2
+            delay=2  # Reset on success
         else
-            log "Connection failed, retry in ${delay}s"
+            log "INFO" "Reconnecting in ${delay}s..."
         fi
 
         sleep "$delay"
-        # Increase delay up to 30 seconds
-        ((delay = delay < 30 ? delay * 2 : 30))
+
+        # Exponential backoff (max 30s)
+        ((delay = delay < MAX_RECONNECT_DELAY ? delay * 2 : MAX_RECONNECT_DELAY))
     done
 }
 
-# Cleanup on exit
-cleanup() {
-    log "Shutting down"
-    jobs -p | xargs -r kill 2>/dev/null || true
-}
-trap cleanup EXIT INT TERM
-
-main
+main "$@"

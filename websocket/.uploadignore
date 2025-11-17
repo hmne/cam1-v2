@@ -1,0 +1,5 @@
+# Exclude VPS files from upload
+# These files are only for VPS server setup, not website deployment
+
+websocket/vps/
+websocket/README.md
