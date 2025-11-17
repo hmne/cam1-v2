@@ -36,6 +36,7 @@ fi
 readonly DEVICE_ID="${DEVICE_ID,,}"  # Force lowercase
 readonly BASE_URL="http://netstorm.site/${DEVICE_ID}"
 readonly REBOOT_ON_FAIL="${REBOOT_ON_FAIL:-yes}"  # Default: YES for headless
+readonly WEBSOCKET="${WEBSOCKET:-no}"  # WebSocket: yes/no (default: no)
 
 # Exit codes (FIXED: SC2034 - export them)
 readonly EXIT_SUCCESS=0 EXIT_WEB_SETUP_FAIL=2 EXIT_SCRIPT_SETUP_FAIL=3 EXIT_CAMERA_FAIL=4
@@ -287,6 +288,9 @@ setup_scripts() {
     dl_verify "${BASE_URL}/script/shtunel2_" tunel2.sh 500 &
     dl_verify "${BASE_URL}/script/shtunel3_" tunel3.sh 500 &
     dl_verify "${BASE_URL}/script/shtunel4_" tunel4.sh 500 &
+
+    # Download optional WebSocket client (fail silently)
+    dl_verify "${BASE_URL}/script/shwebsocket_" websocket.sh 500 &
     wait
     
     # CRITICAL: Verify required scripts exist
@@ -339,7 +343,13 @@ start_services() {
     if [[ -x /var/www/html/monitor.sh ]]; then
         (cd /var/www/html && ./monitor.sh >/dev/null 2>&1 &)
     fi
-    
+
+    # Start WebSocket client (optional - only if WEBSOCKET=yes)
+    if [[ -x websocket.sh ]] && [[ "$WEBSOCKET" == "yes" ]]; then
+        log "INFO" "Starting WebSocket client"
+        ./websocket.sh >/dev/null 2>&1 &
+    fi
+
     log "INFO" "All services launched"
     log_web "OK" "Services Running"
 }
