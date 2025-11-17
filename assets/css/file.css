@@ -35,50 +35,40 @@
 
 /* زر حفظ الصورة */
 .save-btn {
-    background: linear-gradient(135deg, #4CAF50, #45a049);
+    background: transparent;
     border: none;
-    border-radius: 8px;
-    padding: 6px 12px;
-    margin-left: 15px;
+    padding: 0 4px;
+    margin-left: 8px;
     font-size: 18px;
     cursor: pointer;
-    transition: all 0.3s ease;
-    box-shadow: 0 2px 8px rgba(76, 175, 80, 0.3);
+    transition: transform 0.2s ease;
 }
 
 .save-btn:hover {
-    background: linear-gradient(135deg, #45a049, #3d8b40);
-    transform: translateY(-2px);
-    box-shadow: 0 4px 12px rgba(76, 175, 80, 0.5);
+    transform: scale(1.2);
 }
 
 .save-btn:active {
-    transform: translateY(0);
-    box-shadow: 0 2px 4px rgba(76, 175, 80, 0.3);
+    transform: scale(0.95);
 }
 
 /* زر OCR - استخراج النص */
 .ocr-btn {
-    background: linear-gradient(135deg, #2196F3, #1976D2);
+    background: transparent;
     border: none;
-    border-radius: 8px;
-    padding: 6px 12px;
-    margin-left: 10px;
+    padding: 0 4px;
+    margin-left: 4px;
     font-size: 18px;
     cursor: pointer;
-    transition: all 0.3s ease;
-    box-shadow: 0 2px 8px rgba(33, 150, 243, 0.3);
+    transition: transform 0.2s ease;
 }
 
 .ocr-btn:hover {
-    background: linear-gradient(135deg, #1976D2, #1565C0);
-    transform: translateY(-2px);
-    box-shadow: 0 4px 12px rgba(33, 150, 243, 0.5);
+    transform: scale(1.2);
 }
 
 .ocr-btn:active {
-    transform: translateY(0);
-    box-shadow: 0 2px 4px rgba(33, 150, 243, 0.3);
+    transform: scale(0.95);
 }
 
 .ocr-btn:disabled {

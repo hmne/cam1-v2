@@ -283,14 +283,8 @@
             state.liveInterval = null;
         }
 
-        if (DOM.liveContainer) {
-            DOM.liveContainer.style.display = 'none';
-        }
-
-        // Clear image to free memory
-        if (DOM.liveImage) {
-            DOM.liveImage.src = 'data:,';
-        }
+        // Don't hide container or clear image - keep captured image visible
+        // Only stop the live updates
 
         console.log('[' + CONFIG.CAM + '] 🔴 Live stream stopped');
     }
@@ -392,34 +386,26 @@
             // Get size
             fetchText('index.php?get_image_size=1&t=' + Date.now())
                 .then(size => {
-                    // Create or get a separate container for captured images
-                    let capturedContainer = document.getElementById('capturedImageContainer');
-                    if (!capturedContainer) {
-                        capturedContainer = document.createElement('div');
-                        capturedContainer.id = 'capturedImageContainer';
-                        capturedContainer.style.cssText = 'margin-top:10px;';
-
-                        const liveContainer = document.getElementById('webLiveContainer');
-                        if (liveContainer) {
-                            liveContainer.parentNode.insertBefore(capturedContainer, liveContainer.nextSibling);
-                        } else {
-                            document.body.appendChild(capturedContainer);
+                    // Use the live container to show captured image (not a separate container)
+                    // This prevents interference with live stream
+                    const liveContainer = document.getElementById('webLiveContainer');
+                    if (liveContainer) {
+                        // Store original live image element reference
+                        const liveImg = document.getElementById('webLiveImage');
+                        if (liveImg) {
+                            liveImg.src = this.src;
                         }
+                        liveContainer.style.display = 'block';
                     }
 
-                    capturedContainer.innerHTML = '<img src="' + this.src + '" style="max-width:100%; border-radius:10px;" />';
-                    capturedContainer.style.display = 'block';
-
-                    let details = document.getElementById('imageDetails');
+                    let details = document.getElementById('imageSizeText');
                     if (!details) {
                         details = document.createElement('div');
-                        details.id = 'imageDetails';
-                        details.style.cssText = 'text-align:center; margin-top:10px; font-size:14px;';
-                        capturedContainer.after(details);
+                        details.id = 'imageSizeText';
+                        details.className = 'data-text';
+                        if (liveContainer) liveContainer.after(details);
                     }
-                    details.innerHTML = 'Image size: ' + size + ' <span class="capture-time">Time: ' + captureTime + 's</span>' +
-                        ' <button onclick="saveImageToDevice()" class="save-btn" title="Save to device (S)">💾</button>' +
-                        ' <button onclick="extractTextFromImage()" class="ocr-btn" title="Copy text from image (O)">📋</button>';
+                    details.innerHTML = 'Image size: ' + size + ' <span class="capture-time">Time: ' + captureTime + 's</span> <button onclick="saveImageToDevice()" class="save-btn" title="Save to device (S)">💾</button> <button onclick="extractTextFromImage()" class="ocr-btn" title="Copy text from image (O)">📋</button>';
                 })
                 .catch(() => {});
 
