@@ -184,6 +184,16 @@
             .then(html => {
                 if (DOM.statusContainer) {
                     DOM.statusContainer.innerHTML = html;
+
+                    // CRITICAL: Execute inline scripts (innerHTML doesn't execute them!)
+                    const scripts = DOM.statusContainer.getElementsByTagName('script');
+                    for (let i = 0; i < scripts.length; i++) {
+                        const oldScript = scripts[i];
+                        const newScript = document.createElement('script');
+                        newScript.text = oldScript.text;
+                        document.head.appendChild(newScript).parentNode.removeChild(newScript);
+                    }
+
                     updateControlPanelVisibility();
                 }
                 manageLiveStreamBasedOnStatus();
