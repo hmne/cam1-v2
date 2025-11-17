@@ -35,6 +35,8 @@
         statusInterval: null,
         liveInterval: null,
         cleanupInterval: null,
+        sessionHeartbeatInterval: null,
+        sessionId: null,
         isLiveActive: false,
         captureLock: false,
         liveErrorCount: 0,
@@ -200,6 +202,41 @@
     }
 
     // ========================================================================
+    // SESSION HEARTBEAT (Required for Pi to keep live active)
+    // ========================================================================
+
+    function sendSessionHeartbeat() {
+        if (!state.isLiveActive || !state.sessionId) return;
+
+        const timestamp = Date.now();
+        const data = timestamp + ':' + state.sessionId;
+
+        postData('index.php', {
+            action: 'write',
+            file: 'tmp/web_live_session.tmp',
+            data: data
+        });
+    }
+
+    function startSessionHeartbeat() {
+        state.sessionId = Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+        sendSessionHeartbeat();
+
+        if (state.sessionHeartbeatInterval) {
+            clearInterval(state.sessionHeartbeatInterval);
+        }
+        state.sessionHeartbeatInterval = setInterval(sendSessionHeartbeat, 10000);
+    }
+
+    function stopSessionHeartbeat() {
+        if (state.sessionHeartbeatInterval) {
+            clearInterval(state.sessionHeartbeatInterval);
+            state.sessionHeartbeatInterval = null;
+        }
+        state.sessionId = null;
+    }
+
+    // ========================================================================
     // LIVE STREAMING - OPTIMIZED
     // ========================================================================
 
@@ -258,6 +295,10 @@
 
         console.log('[' + CONFIG.CAM + '] 🎥 Starting live stream...');
 
+        // Start session heartbeat IMMEDIATELY (Pi needs this!)
+        state.isLiveActive = true;
+        startSessionHeartbeat();
+
         // Show container immediately with loading state
         if (DOM.liveContainer) {
             DOM.liveContainer.style.display = 'block';
@@ -266,54 +307,62 @@
             DOM.liveImage.src = 'buffer.jpg'; // Show buffer image while waiting
         }
 
-        // Send both requests and wait for them
-        Promise.all([
-            postData('index.php', {
-                action: 'write',
-                file: 'tmp/web_live.tmp',
-                data: 'on'
-            }),
-            postData('index.php', {
-                action: 'write',
-                file: 'tmp/web_live_quality.tmp',
-                data: qualityString
-            })
-        ]).then(function() {
-            console.log('[' + CONFIG.CAM + '] ▶️ Live stream signal sent, waiting for Pi...');
+        // Send live signal to server
+        postData('index.php', {
+            action: 'write',
+            file: 'tmp/web_live.tmp',
+            data: 'on'
+        }).then(function(response) {
+            if (response.trim() === 'OK') {
+                console.log('[' + CONFIG.CAM + '] ▶️ Live stream signal sent, waiting for Pi...');
 
-            // Wait for Raspberry Pi to start sending images
-            setTimeout(function() {
-                state.isLiveActive = true;
-                state.liveErrorCount = 0;
+                // Also send quality
+                postData('index.php', {
+                    action: 'write',
+                    file: 'tmp/web_live_quality.tmp',
+                    data: qualityString
+                });
 
-                // Start fast updates after delay
-                updateLiveImage();
-                state.liveInterval = setInterval(updateLiveImage, CONFIG.LIVE_UPDATE_INTERVAL);
+                // Wait for Raspberry Pi to start sending images
+                setTimeout(function() {
+                    state.liveErrorCount = 0;
 
-                console.log('[' + CONFIG.CAM + '] 🟢 Live stream started');
-            }, CONFIG.LIVE_START_DELAY);
+                    // Start fast updates after delay
+                    updateLiveImage();
+                    state.liveInterval = setInterval(updateLiveImage, CONFIG.LIVE_UPDATE_INTERVAL);
+
+                    console.log('[' + CONFIG.CAM + '] 🟢 Live stream started');
+                }, CONFIG.LIVE_START_DELAY);
+            } else {
+                console.error('[' + CONFIG.CAM + '] ❌ Server rejected: ' + response);
+                stopLiveStream();
+                if (DOM.liveSelect) DOM.liveSelect.value = 'off';
+            }
         }).catch(function() {
             console.error('[' + CONFIG.CAM + '] ❌ Failed to start live stream');
+            stopLiveStream();
             if (DOM.liveSelect) DOM.liveSelect.value = 'off';
-            if (DOM.liveContainer) DOM.liveContainer.style.display = 'none';
         });
     }
 
     function stopLiveStream() {
         if (!state.isLiveActive) return;
 
-        postData('index.php', {
-            action: 'write',
-            file: 'tmp/web_live.tmp',
-            data: 'off'
-        });
+        console.log('[' + CONFIG.CAM + '] 🔴 Stopping live stream...');
 
         state.isLiveActive = false;
+        stopSessionHeartbeat();
 
         if (state.liveInterval) {
             clearInterval(state.liveInterval);
             state.liveInterval = null;
         }
+
+        postData('index.php', {
+            action: 'write',
+            file: 'tmp/web_live.tmp',
+            data: 'off'
+        });
 
         // Hide live container when stopping
         if (DOM.liveContainer) {
