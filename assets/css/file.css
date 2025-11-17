@@ -39,11 +39,15 @@
     background: transparent !important;
     border: none !important;
     padding: 0 4px !important;
-    margin-left: 8px;
+    width: auto !important;
+    margin: 0 !important;
+    margin-left: 8px !important;
     font-size: 18px;
     cursor: pointer;
     transition: transform 0.2s ease;
     vertical-align: middle;
+    border-radius: 0 !important;
+    text-shadow: none !important;
 }
 
 .save-btn:hover {
@@ -60,11 +64,15 @@
     background: transparent !important;
     border: none !important;
     padding: 0 4px !important;
-    margin-left: 4px;
+    width: auto !important;
+    margin: 0 !important;
+    margin-left: 4px !important;
     font-size: 18px;
     cursor: pointer;
     transition: transform 0.2s ease;
     vertical-align: middle;
+    border-radius: 0 !important;
+    text-shadow: none !important;
 }
 
 .ocr-btn:hover {
