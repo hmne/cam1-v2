@@ -1,6 +1,10 @@
 /**
- * WebSocket Client - Browser Integration
- * Production-ready, integrates with existing camera-control.js
+ * WebSocket Client with Automatic Fallback
+ *
+ * Features:
+ * - Automatic fallback to HTTP mode if WebSocket fails
+ * - Seamless integration with existing camera-control.js
+ * - No interference with existing functionality
  *
  * @version 2.0.0
  * @author Net Storm
@@ -10,34 +14,70 @@
 
 (function(window, document) {
     // ==========================================================================
-    // CONFIGURATION
+    // CONFIG
     // ==========================================================================
 
-    const CONFIG = {
-        SERVER: window.WEBSOCKET_SERVER_URL || 'ws://193.160.119.136:8080',
+    var CONFIG = {
+        SERVER: window.WEBSOCKET_SERVER_URL || '',
+        MAX_FAILURES: 3,        // After 3 failures, use HTTP mode
+        RETRY_AFTER: 60000,     // Try WebSocket again after 60s
         RECONNECT_DELAY: 2000,
-        MAX_RECONNECT_DELAY: 30000,
-        RECONNECT_MULTIPLIER: 1.5
+        MAX_RECONNECT_DELAY: 30000
     };
 
     // ==========================================================================
     // STATE
     // ==========================================================================
 
-    const state = {
+    var state = {
         ws: null,
         connected: false,
-        reconnectDelay: CONFIG.RECONNECT_DELAY,
-        reconnectTimer: null
+        failureCount: 0,
+        httpMode: false,        // true = using HTTP fallback
+        reconnectTimer: null,
+        reconnectDelay: CONFIG.RECONNECT_DELAY
     };
+
+    // ==========================================================================
+    // SAFETY CHECK
+    // ==========================================================================
+
+    // If no server configured, don't do anything
+    if (!CONFIG.SERVER) {
+        console.log('[WS] Not configured - using HTTP mode');
+        window.CameraWS = { enabled: false };
+        return;
+    }
+
+    // ==========================================================================
+    // FALLBACK LOGIC
+    // ==========================================================================
+
+    function switchToHttpMode() {
+        state.httpMode = true;
+        console.log('[WS] Switching to HTTP mode (fallback)');
+        trigger('ws:fallback');
+
+        // Try WebSocket again later
+        setTimeout(function() {
+            state.httpMode = false;
+            state.failureCount = 0;
+            console.log('[WS] Retrying WebSocket connection...');
+            connect();
+        }, CONFIG.RETRY_AFTER);
+    }
 
     // ==========================================================================
     // CONNECTION
     // ==========================================================================
 
     function connect() {
+        if (state.httpMode) {
+            return;  // In HTTP mode, don't connect
+        }
+
         if (state.ws && state.ws.readyState === WebSocket.OPEN) {
-            return;
+            return;  // Already connected
         }
 
         console.log('[WS] Connecting to', CONFIG.SERVER);
@@ -48,18 +88,17 @@
             state.ws.onopen = function() {
                 console.log('[WS] Connected');
                 state.connected = true;
+                state.failureCount = 0;  // Reset on success
                 state.reconnectDelay = CONFIG.RECONNECT_DELAY;
 
                 // Identify as browser
                 send({ type: 'identify', role: 'browser' });
-
-                // Notify app
                 trigger('ws:connected');
             };
 
             state.ws.onmessage = function(event) {
                 try {
-                    const msg = JSON.parse(event.data);
+                    var msg = JSON.parse(event.data);
                     handleMessage(msg);
                 } catch (err) {
                     console.error('[WS] Parse error:', err);
@@ -69,17 +108,30 @@
             state.ws.onclose = function() {
                 console.log('[WS] Disconnected');
                 state.connected = false;
-                trigger('ws:disconnected');
-                scheduleReconnect();
+                state.failureCount++;
+
+                if (state.failureCount >= CONFIG.MAX_FAILURES) {
+                    switchToHttpMode();
+                } else {
+                    trigger('ws:disconnected');
+                    scheduleReconnect();
+                }
             };
 
             state.ws.onerror = function(err) {
                 console.error('[WS] Error:', err);
+                state.failureCount++;
             };
 
         } catch (err) {
             console.error('[WS] Connection failed:', err);
-            scheduleReconnect();
+            state.failureCount++;
+
+            if (state.failureCount >= CONFIG.MAX_FAILURES) {
+                switchToHttpMode();
+            } else {
+                scheduleReconnect();
+            }
         }
     }
 
@@ -88,10 +140,14 @@
             clearTimeout(state.reconnectTimer);
         }
 
+        if (state.httpMode) {
+            return;  // Don't reconnect in HTTP mode
+        }
+
         state.reconnectTimer = setTimeout(function() {
             connect();
             state.reconnectDelay = Math.min(
-                state.reconnectDelay * CONFIG.RECONNECT_MULTIPLIER,
+                state.reconnectDelay * 1.5,
                 CONFIG.MAX_RECONNECT_DELAY
             );
         }, state.reconnectDelay);
@@ -113,144 +169,110 @@
         console.log('[WS] Received:', msg.type);
 
         switch (msg.type) {
-            // Initial status
             case 'init':
                 trigger('ws:init', msg.status);
                 updateStatus(msg.status);
                 break;
 
-            // Status update
             case 'status':
                 updateStatus(msg.status);
                 break;
 
-            // Camera online
             case 'camera_online':
                 trigger('camera:online');
                 notify('Camera Connected', 'Camera is now online');
                 break;
 
-            // Camera offline
             case 'camera_offline':
                 trigger('camera:offline');
                 notify('Camera Disconnected', 'Connection lost');
                 break;
 
-            // Capture started
             case 'capture_started':
                 trigger('capture:started', { id: msg.id });
-                updateCaptureUI(true);
+                setCaptureUI(true);
                 break;
 
-            // Capture done - INSTANT!
             case 'capture_done':
                 trigger('capture:done', {
                     id: msg.id,
                     url: msg.url,
                     duration: msg.duration
                 });
-                updateCaptureUI(false);
-                updateImage(msg.url);
+                setCaptureUI(false);
+                setImage(msg.url);
                 notify('Capture Complete', 'Image captured in ' + msg.duration + 'ms');
                 break;
 
-            // Capture timeout
             case 'capture_timeout':
                 trigger('capture:timeout', { id: msg.id });
-                updateCaptureUI(false);
-                notify('Capture Timeout', 'Image capture took too long');
+                setCaptureUI(false);
                 break;
 
-            // Live frame
             case 'live_frame':
                 trigger('live:frame', { url: msg.url });
-                updateLiveImage(msg.url);
+                setLiveImage(msg.url);
                 break;
 
-            // Live status
             case 'live_status':
                 trigger('live:status', { active: msg.active });
                 break;
 
-            // Error
             case 'error':
                 console.error('[WS] Server error:', msg.message);
-                trigger('ws:error', { message: msg.message });
                 break;
-
-            default:
-                console.log('[WS] Unknown message:', msg.type);
         }
     }
 
     // ==========================================================================
-    // UI UPDATES
+    // UI UPDATES (optional - won't break if elements don't exist)
     // ==========================================================================
 
     function updateStatus(status) {
         if (!status) return;
 
-        // Parse data
-        const parts = (status.data || 'N/A,N/A,N/A,N/A').split(',');
-        const memory = parts[0] || 'N/A';
-        const temp = parts[1] || 'N/A';
-        const ping = parts[2] || 'N/A';
-        const signal = parts[3] || 'N/A';
+        var parts = (status.data || 'N/A,N/A,N/A,N/A').split(',');
 
-        // Update status elements if they exist
-        const memEl = document.getElementById('memoryStatus');
-        const tempEl = document.getElementById('tempStatus');
-        const pingEl = document.getElementById('pingStatus');
-        const signalEl = document.getElementById('signalStatus');
+        var memEl = document.getElementById('memoryStatus');
+        var tempEl = document.getElementById('tempStatus');
+        var pingEl = document.getElementById('pingStatus');
+        var sigEl = document.getElementById('signalStatus');
 
-        if (memEl) memEl.textContent = memory;
-        if (tempEl) tempEl.textContent = temp;
-        if (pingEl) pingEl.textContent = ping;
-        if (signalEl) signalEl.textContent = signal;
+        if (memEl) memEl.textContent = parts[0] || 'N/A';
+        if (tempEl) tempEl.textContent = parts[1] || 'N/A';
+        if (pingEl) pingEl.textContent = parts[2] || 'N/A';
+        if (sigEl) sigEl.textContent = parts[3] || 'N/A';
 
-        // Update online indicator
-        const indicator = document.querySelector('.status-indicator');
+        var indicator = document.querySelector('.status-indicator');
         if (indicator) {
-            if (status.online) {
-                indicator.className = 'status-indicator online';
-                indicator.textContent = 'Connected (Online)';
-            } else {
-                indicator.className = 'status-indicator offline';
-                indicator.textContent = 'Disconnected (Offline)';
-            }
+            indicator.className = 'status-indicator ' + (status.online ? 'online' : 'offline');
+            indicator.textContent = status.online ? 'Connected (Online)' : 'Disconnected (Offline)';
         }
 
-        // Expose to global
         window.cameraStatus = status;
     }
 
-    function updateCaptureUI(capturing) {
-        const btn = document.getElementById('takePicBtn');
+    function setCaptureUI(capturing) {
+        var btn = document.getElementById('takePicBtn');
         if (!btn) return;
 
         if (capturing) {
             btn.disabled = true;
-            btn.classList.add('capturing');
-            btn.textContent = btn.dataset.captureText || 'Capturing...';
+            btn.textContent = 'Capturing...';
         } else {
             btn.disabled = false;
-            btn.classList.remove('capturing');
-            btn.textContent = btn.dataset.normalText || 'Capture Image';
+            btn.textContent = 'Capture Image';
         }
     }
 
-    function updateImage(url) {
-        const img = document.getElementById('pic');
-        if (img) {
-            img.src = url;
-        }
+    function setImage(url) {
+        var img = document.getElementById('pic');
+        if (img) img.src = url;
     }
 
-    function updateLiveImage(url) {
-        const img = document.getElementById('liveImg');
-        if (img) {
-            img.src = url;
-        }
+    function setLiveImage(url) {
+        var img = document.getElementById('liveImg');
+        if (img) img.src = url;
     }
 
     // ==========================================================================
@@ -258,27 +280,25 @@
     // ==========================================================================
 
     function notify(title, body) {
-        // Don't notify if page is focused
         if (document.visibilityState === 'visible' && document.hasFocus()) {
-            return;
+            return;  // Page is focused, no need to notify
         }
 
         if (!('Notification' in window) || Notification.permission !== 'granted') {
             return;
         }
 
-        const notification = new Notification(title, {
+        var n = new Notification(title, {
             body: body,
             icon: 'assets/images/logo.ico',
-            tag: 'camera-ws',
+            tag: 'camera',
             renotify: true
         });
 
-        setTimeout(function() { notification.close(); }, 8000);
-
-        notification.onclick = function() {
+        setTimeout(function() { n.close(); }, 8000);
+        n.onclick = function() {
             window.focus();
-            notification.close();
+            n.close();
         };
     }
 
@@ -291,8 +311,8 @@
     // EVENTS
     // ==========================================================================
 
-    function trigger(eventName, data) {
-        const event = new CustomEvent(eventName, { detail: data || {} });
+    function trigger(name, data) {
+        var event = new CustomEvent(name, { detail: data || {} });
         window.dispatchEvent(event);
     }
 
@@ -300,20 +320,28 @@
     // PUBLIC API
     // ==========================================================================
 
-    const API = {
-        // Connection
-        connect: connect,
+    window.CameraWS = {
+        enabled: true,
 
         isConnected: function() {
             return state.connected;
         },
 
-        // Camera commands
+        isHttpMode: function() {
+            return state.httpMode;
+        },
+
         capture: function() {
+            if (state.httpMode) {
+                return false;  // Let camera-control.js handle it
+            }
             return send({ type: 'capture' });
         },
 
         startLive: function(quality) {
+            if (state.httpMode) {
+                return false;
+            }
             return send({
                 type: 'live_start',
                 quality: quality || 'medium'
@@ -321,18 +349,21 @@
         },
 
         stopLive: function() {
+            if (state.httpMode) {
+                return false;
+            }
             return send({ type: 'live_stop' });
         },
 
         updateSettings: function(settings) {
+            if (state.httpMode) {
+                return false;
+            }
             return send({
                 type: 'settings',
                 data: settings
             });
-        },
-
-        // Raw send
-        send: send
+        }
     };
 
     // ==========================================================================
@@ -344,8 +375,5 @@
     } else {
         connect();
     }
-
-    // Expose API
-    window.CameraWS = API;
 
 })(window, document);
