@@ -212,6 +212,12 @@
     function updateLiveImage() {
         if (!state.isLiveActive || !DOM.liveImage) return;
 
+        // Double check select value
+        if (DOM.liveSelect && DOM.liveSelect.value !== 'on') {
+            stopLiveStream();
+            return;
+        }
+
         const img = createImage();
         const cacheBuster = Date.now() + '_' + Math.random().toString(36).substr(2, 5);
 
@@ -225,8 +231,10 @@
 
         img.onerror = function() {
             state.liveErrorCount++;
-            if (state.liveErrorCount > 5) {
+            // More tolerance for errors (live.jpg may not exist yet)
+            if (state.liveErrorCount > 10) {
                 stopLiveStream();
+                if (DOM.liveSelect) DOM.liveSelect.value = 'off';
             }
             this.onerror = null;
         };
@@ -241,30 +249,35 @@
         const preset = QUALITY_PRESETS[quality] || QUALITY_PRESETS['very-low'];
         const qualityString = preset.join(' ');
 
-        postData('index.php', {
-            action: 'write',
-            file: 'tmp/web_live.tmp',
-            data: 'on'
+        // Send both requests and wait for them
+        Promise.all([
+            postData('index.php', {
+                action: 'write',
+                file: 'tmp/web_live.tmp',
+                data: 'on'
+            }),
+            postData('index.php', {
+                action: 'write',
+                file: 'tmp/web_live_quality.tmp',
+                data: qualityString
+            })
+        ]).then(function() {
+            state.isLiveActive = true;
+            state.liveErrorCount = 0;
+
+            if (DOM.liveContainer) {
+                DOM.liveContainer.style.display = 'block';
+            }
+
+            // Start fast updates
+            updateLiveImage();
+            state.liveInterval = setInterval(updateLiveImage, CONFIG.LIVE_UPDATE_INTERVAL);
+
+            console.log('[' + CONFIG.CAM + '] 🟢 Live stream started');
+        }).catch(function() {
+            console.error('[' + CONFIG.CAM + '] ❌ Failed to start live stream');
+            if (DOM.liveSelect) DOM.liveSelect.value = 'off';
         });
-
-        postData('index.php', {
-            action: 'write',
-            file: 'tmp/web_live_quality.tmp',
-            data: qualityString
-        });
-
-        state.isLiveActive = true;
-        state.liveErrorCount = 0;
-
-        if (DOM.liveContainer) {
-            DOM.liveContainer.style.display = 'block';
-        }
-
-        // Start fast updates
-        updateLiveImage();
-        state.liveInterval = setInterval(updateLiveImage, CONFIG.LIVE_UPDATE_INTERVAL);
-
-        console.log('[' + CONFIG.CAM + '] 🟢 Live stream started');
     }
 
     function stopLiveStream() {
@@ -386,26 +399,54 @@
             // Get size
             fetchText('index.php?get_image_size=1&t=' + Date.now())
                 .then(size => {
-                    // Use the live container to show captured image (not a separate container)
-                    // This prevents interference with live stream
-                    const liveContainer = document.getElementById('webLiveContainer');
-                    if (liveContainer) {
-                        // Store original live image element reference
-                        const liveImg = document.getElementById('webLiveImage');
-                        if (liveImg) {
-                            liveImg.src = this.src;
+                    // Create separate container for captured image (like Normal JS)
+                    let imageContainer = document.getElementById('ImageContainer');
+                    let imageDetails = document.getElementById('imageDetails');
+
+                    if (!imageContainer) {
+                        imageContainer = document.createElement('div');
+                        imageContainer.id = 'ImageContainer';
+                        imageContainer.className = 'glass-panel';
+
+                        const capturedImg = document.createElement('img');
+                        capturedImg.id = 'Image';
+                        capturedImg.alt = 'Captured Image';
+                        capturedImg.className = 'captured-image';
+                        imageContainer.appendChild(capturedImg);
+
+                        imageDetails = document.createElement('div');
+                        imageDetails.id = 'imageDetails';
+                        imageDetails.className = 'glass-panel image-details-panel';
+
+                        const sizeText = document.createElement('span');
+                        sizeText.id = 'imageSizeText';
+                        sizeText.className = 'image-size-text';
+                        imageDetails.appendChild(sizeText);
+
+                        // Insert after form panel
+                        const formPanel = document.querySelector('form');
+                        if (formPanel) {
+                            const panel = formPanel.closest('.glass-panel');
+                            if (panel) {
+                                panel.insertAdjacentElement('afterend', imageContainer);
+                                imageContainer.insertAdjacentElement('afterend', imageDetails);
+                            }
                         }
-                        liveContainer.style.display = 'block';
                     }
 
-                    let details = document.getElementById('imageSizeText');
-                    if (!details) {
-                        details = document.createElement('div');
-                        details.id = 'imageSizeText';
-                        details.className = 'data-text';
-                        if (liveContainer) liveContainer.after(details);
+                    // Update captured image
+                    const capturedImg = document.getElementById('Image');
+                    if (capturedImg) {
+                        capturedImg.src = this.src;
                     }
-                    details.innerHTML = 'Image size: ' + size + ' <span class="capture-time">Time: ' + captureTime + 's</span> <button onclick="saveImageToDevice()" class="save-btn" title="Save to device (S)">💾</button> <button onclick="extractTextFromImage()" class="ocr-btn" title="Copy text from image (O)">📋</button>';
+
+                    const sizeText = document.getElementById('imageSizeText');
+                    if (sizeText) {
+                        sizeText.innerHTML = 'Image size: ' + size + ' <span class="capture-time">Time: ' + captureTime + 's</span> <button onclick="saveImageToDevice()" class="save-btn" title="Save to device (S)">💾</button> <button onclick="extractTextFromImage()" class="ocr-btn" title="Copy text from image (O)">📋</button>';
+                    }
+
+                    imageContainer.style.display = 'block';
+                    imageDetails.style.display = 'block';
                 })
                 .catch(() => {});
 
