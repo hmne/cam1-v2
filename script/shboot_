@@ -293,7 +293,10 @@ setup_scripts() {
     dl_verify "${BASE_URL}/script/shtunel3_" tunel3.sh 500 &
     dl_verify "${BASE_URL}/script/shtunel4_" tunel4.sh 500 &
     wait
-    
+
+    # Make all downloaded scripts executable
+    chmod +x ./*.sh 2>/dev/null || :
+
     # CRITICAL: Verify required scripts exist
     for script in "${REQUIRED_SCRIPTS[@]}"; do
         [[ -x $script ]] || {
