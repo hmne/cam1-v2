@@ -66,9 +66,9 @@ log_web() {
 # FUNCTIONS
 #===============================================================================
 
-# Check internet connectivity
+# Check internet connectivity (ping the actual server, not 9.9.9.9)
 check_internet() {
-    ping -q -c 1 -W 1 9.9.9.9 >/dev/null 2>&1
+    ping -q -c 1 -W 2 netstorm.site >/dev/null 2>&1
 }
 
 
