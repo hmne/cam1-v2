@@ -19,7 +19,7 @@
         CAM: window.CAMERA_NAME || 'Camera',
         STATUS_UPDATE_INTERVAL: 2000,      // 2 sec
         LIVE_UPDATE_INTERVAL: 1000,        // 1 sec (faster updates)
-        LIVE_START_DELAY: 800,             // 800ms delay for Pi to start
+        LIVE_START_DELAY: 800,             // 800ms delay for camera to start
         CAPTURE_CHECK_INTERVAL: 50,        // 50ms (very fast polling)
         CAPTURE_MAX_WAIT: 15000,           // 15 sec max wait
         OFFLINE_THRESHOLD: 7,
@@ -247,7 +247,7 @@
     }
 
     // ========================================================================
-    // SESSION HEARTBEAT (Required for Pi to keep live active)
+    // SESSION HEARTBEAT (Required for camera to keep live active)
     // ========================================================================
 
     function sendSessionHeartbeat() {
@@ -347,13 +347,25 @@
 
         console.log('[' + CONFIG.CAM + '] 🎥 Starting live stream...');
 
-        // Start session heartbeat IMMEDIATELY (Pi needs this!)
+        // Start session heartbeat IMMEDIATELY (camera needs this!)
         state.isLiveActive = true;
         startSessionHeartbeat();
 
-        // Show container immediately with loading state
+        // Show container immediately with loading indicator
         if (DOM.liveContainer) {
             DOM.liveContainer.style.display = 'block';
+
+            // Add loading indicator
+            if (!document.getElementById('loadingIndicator')) {
+                const liveFeed = document.getElementById('liveFeed');
+                if (liveFeed) {
+                    const loadingDiv = document.createElement('div');
+                    loadingDiv.id = 'loadingIndicator';
+                    loadingDiv.className = 'loading-overlay';
+                    loadingDiv.innerHTML = '<div class="spinner"></div><div class="loading-text">Starting live stream...</div>';
+                    liveFeed.appendChild(loadingDiv);
+                }
+            }
         }
         if (DOM.liveImage) {
             DOM.liveImage.src = 'buffer.jpg'; // Show buffer image while waiting
@@ -366,7 +378,7 @@
             data: 'on'
         }).then(function(response) {
             if (response.trim() === 'OK') {
-                console.log('[' + CONFIG.CAM + '] ▶️ Live stream signal sent, waiting for Pi...');
+                console.log('[' + CONFIG.CAM + '] ▶️ Live stream signal sent, waiting for ' + CONFIG.CAM + '...');
 
                 // Also send quality
                 postData('index.php', {
@@ -375,8 +387,12 @@
                     data: qualityString
                 });
 
-                // Wait for Raspberry Pi to start sending images
+                // Wait for camera to start sending images
                 setTimeout(function() {
+                    // Remove loading indicator
+                    const indicator = document.getElementById('loadingIndicator');
+                    if (indicator) indicator.remove();
+
                     state.liveErrorCount = 0;
 
                     // Start fast updates after delay
@@ -386,11 +402,19 @@
                     console.log('[' + CONFIG.CAM + '] 🟢 Live stream started');
                 }, CONFIG.LIVE_START_DELAY);
             } else {
+                // Remove loading indicator on error
+                const indicator = document.getElementById('loadingIndicator');
+                if (indicator) indicator.remove();
+
                 console.error('[' + CONFIG.CAM + '] ❌ Server rejected: ' + response);
                 stopLiveStream();
                 if (DOM.liveSelect) DOM.liveSelect.value = 'off';
             }
         }).catch(function() {
+            // Remove loading indicator on error
+            const indicator = document.getElementById('loadingIndicator');
+            if (indicator) indicator.remove();
+
             console.error('[' + CONFIG.CAM + '] ❌ Failed to start live stream');
             stopLiveStream();
             if (DOM.liveSelect) DOM.liveSelect.value = 'off';
@@ -415,6 +439,10 @@
             clearInterval(state.liveInterval);
             state.liveInterval = null;
         }
+
+        // Remove loading indicator if present
+        const indicator = document.getElementById('loadingIndicator');
+        if (indicator) indicator.remove();
 
         // Hide live container when stopping
         if (DOM.liveContainer) {
@@ -441,6 +469,10 @@
             clearInterval(state.liveInterval);
             state.liveInterval = null;
         }
+
+        // Remove loading indicator if present
+        const indicator = document.getElementById('loadingIndicator');
+        if (indicator) indicator.remove();
 
         // Keep container visible, show buffer image
         if (DOM.liveImage) {
@@ -487,14 +519,19 @@
         const wasLiveActive = state.isLiveActive;
         const beforeTime = Date.now();
 
-        // Stop live stream during capture
+        // Pause live stream during capture (don't hide container)
         if (wasLiveActive) {
-            stopLiveStream();
-            if (DOM.liveSelect) DOM.liveSelect.value = 'off';
+            stopLiveStreamSilent(); // Just pause, keep container visible
+            postData('index.php', {
+                action: 'write',
+                file: 'tmp/web_live.tmp',
+                data: 'off'
+            });
         }
 
         DOM.captureButton.textContent = 'Capturing...';
         DOM.captureButton.disabled = true;
+        DOM.captureButton.classList.add('blinking'); // Add blinking animation
 
         // Get form values for capture settings
         const getSelectValue = function(name) {
@@ -520,6 +557,7 @@
                 if (response === 'BUSY') {
                     DOM.captureButton.textContent = originalText;
                     DOM.captureButton.disabled = false;
+                    DOM.captureButton.classList.remove('blinking');
                     state.captureLock = false;
                     alert('Camera is busy. Please wait and try again.');
                     return;
@@ -530,6 +568,7 @@
             .catch(function() {
                 DOM.captureButton.textContent = originalText;
                 DOM.captureButton.disabled = false;
+                DOM.captureButton.classList.remove('blinking');
                 state.captureLock = false;
             });
     };
@@ -633,12 +672,13 @@
         if (DOM.captureButton) {
             DOM.captureButton.textContent = originalText;
             DOM.captureButton.disabled = false;
+            DOM.captureButton.classList.remove('blinking'); // Remove blinking animation
         }
         state.captureLock = false;
 
-        // Restore live stream
+        // Restore live stream if it was active
         if (wasLiveActive) {
-            setTimeout(() => {
+            setTimeout(function() {
                 if (DOM.liveSelect) DOM.liveSelect.value = 'on';
                 startLiveStream();
             }, 500);

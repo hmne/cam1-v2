@@ -411,7 +411,7 @@
     /**
      * Check session conflict - Mutual Exclusion (Two-Way Switch)
      * If another client/server opened live stream → stop our stream
-     * This prevents multiple simultaneous streams (Pi can't handle it)
+     * This prevents multiple simultaneous streams (camera can't handle it)
      */
     function checkSessionConflict() {
         if (!state.isLiveActive) return;
