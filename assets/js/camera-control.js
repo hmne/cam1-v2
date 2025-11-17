@@ -663,13 +663,13 @@
                     <img id="Image" alt="Captured Image" loading="eager" class="captured-image">
                 </div>
                 <div id="imageDetails" class="glass-panel image-details-panel">
-                    <p id="imageSizeText" class="image-size-text">Loading image size...</p>
+                    <span id="imageSizeText" class="image-size-text">Loading image size...</span>
                 </div>
             `);
 
             $('form').closest('.glass-panel').after($imageContainer);
         } else {
-            $('#imageSizeText').html('<p class="image-size-text">Loading image size...</p>');
+            $('#imageSizeText').html('Loading image size...');
         }
 
         const newImage = createTrackedImage();

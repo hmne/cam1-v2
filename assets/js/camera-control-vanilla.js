@@ -698,7 +698,7 @@
 
         // Update loading message
         imageDetails.innerHTML = `
-            <p id="imageSizeText" class="image-size-text">Loading image size...</p>
+            <span id="imageSizeText" class="image-size-text">Loading image size...</span>
         `;
 
         // Insert containers if they don't exist
