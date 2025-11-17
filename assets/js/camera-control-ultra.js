@@ -19,6 +19,7 @@
         CAM: window.CAMERA_NAME || 'Camera',
         STATUS_UPDATE_INTERVAL: 2000,      // 2 sec
         LIVE_UPDATE_INTERVAL: 1000,        // 1 sec (faster updates)
+        LIVE_START_DELAY: 800,             // 800ms delay for Pi to start
         CAPTURE_CHECK_INTERVAL: 50,        // 50ms (very fast polling)
         CAPTURE_MAX_WAIT: 15000,           // 15 sec max wait
         OFFLINE_THRESHOLD: 7,
@@ -243,6 +244,16 @@
         const preset = QUALITY_PRESETS[quality] || QUALITY_PRESETS['very-low'];
         const qualityString = preset.join(' ');
 
+        console.log('[' + CONFIG.CAM + '] 🎥 Starting live stream...');
+
+        // Show container immediately with loading state
+        if (DOM.liveContainer) {
+            DOM.liveContainer.style.display = 'block';
+        }
+        if (DOM.liveImage) {
+            DOM.liveImage.src = 'buffer.jpg'; // Show buffer image while waiting
+        }
+
         // Send both requests and wait for them
         Promise.all([
             postData('index.php', {
@@ -256,21 +267,23 @@
                 data: qualityString
             })
         ]).then(function() {
-            state.isLiveActive = true;
-            state.liveErrorCount = 0;
+            console.log('[' + CONFIG.CAM + '] ▶️ Live stream signal sent, waiting for Pi...');
 
-            if (DOM.liveContainer) {
-                DOM.liveContainer.style.display = 'block';
-            }
+            // Wait for Raspberry Pi to start sending images
+            setTimeout(function() {
+                state.isLiveActive = true;
+                state.liveErrorCount = 0;
 
-            // Start fast updates
-            updateLiveImage();
-            state.liveInterval = setInterval(updateLiveImage, CONFIG.LIVE_UPDATE_INTERVAL);
+                // Start fast updates after delay
+                updateLiveImage();
+                state.liveInterval = setInterval(updateLiveImage, CONFIG.LIVE_UPDATE_INTERVAL);
 
-            console.log('[' + CONFIG.CAM + '] 🟢 Live stream started');
+                console.log('[' + CONFIG.CAM + '] 🟢 Live stream started');
+            }, CONFIG.LIVE_START_DELAY);
         }).catch(function() {
             console.error('[' + CONFIG.CAM + '] ❌ Failed to start live stream');
             if (DOM.liveSelect) DOM.liveSelect.value = 'off';
+            if (DOM.liveContainer) DOM.liveContainer.style.display = 'none';
         });
     }
 
