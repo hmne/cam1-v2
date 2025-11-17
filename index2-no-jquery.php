@@ -343,12 +343,7 @@ if (isset($_POST['b1']) && $_POST['b1'] === 'inic') {
         // Security token for admin actions
         window.ADMIN_TOKEN = '<?= $_SESSION['admin_token'] ?>';
     </script>
-    <?php if (SPEED_MODE): ?>
-    <!-- Speed Mode: Minified JavaScript -->
-    <script defer src="assets/js/camera-control-vanilla.min.js?v=<?= file_exists('assets/js/camera-control-vanilla.min.js') ? filemtime('assets/js/camera-control-vanilla.min.js') : time() ?>"></script>
-    <?php else: ?>
-    <!-- Normal Mode: Standard JavaScript -->
+    <!-- Vanilla JavaScript (no jQuery) -->
     <script defer src="assets/js/camera-control-vanilla.js?v=<?= file_exists('assets/js/camera-control-vanilla.js') ? filemtime('assets/js/camera-control-vanilla.js') : time() ?>"></script>
-    <?php endif; ?>
 </body>
 </html>
