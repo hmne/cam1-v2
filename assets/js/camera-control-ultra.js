@@ -392,22 +392,34 @@
             // Get size
             fetchText('index.php?get_image_size=1&t=' + Date.now())
                 .then(size => {
-                    const container = document.getElementById('liveImageContainer') ||
-                                     document.getElementById('webLiveContainer');
+                    // Create or get a separate container for captured images
+                    let capturedContainer = document.getElementById('capturedImageContainer');
+                    if (!capturedContainer) {
+                        capturedContainer = document.createElement('div');
+                        capturedContainer.id = 'capturedImageContainer';
+                        capturedContainer.style.cssText = 'margin-top:10px;';
 
-                    if (container) {
-                        container.innerHTML = '<img src="' + this.src + '" style="max-width:100%; border-radius:10px;" />';
-                        container.style.display = 'block';
+                        const liveContainer = document.getElementById('webLiveContainer');
+                        if (liveContainer) {
+                            liveContainer.parentNode.insertBefore(capturedContainer, liveContainer.nextSibling);
+                        } else {
+                            document.body.appendChild(capturedContainer);
+                        }
                     }
+
+                    capturedContainer.innerHTML = '<img src="' + this.src + '" style="max-width:100%; border-radius:10px;" />';
+                    capturedContainer.style.display = 'block';
 
                     let details = document.getElementById('imageDetails');
                     if (!details) {
                         details = document.createElement('div');
                         details.id = 'imageDetails';
                         details.style.cssText = 'text-align:center; margin-top:10px; font-size:14px;';
-                        if (container) container.after(details);
+                        capturedContainer.after(details);
                     }
-                    details.innerHTML = '📷 ' + size + ' | ⏱️ ' + captureTime + 's';
+                    details.innerHTML = 'Image size: ' + size + ' <span class="capture-time">Time: ' + captureTime + 's</span>' +
+                        ' <button onclick="saveImageToDevice()" class="save-btn" title="Save to device (S)">💾</button>' +
+                        ' <button onclick="extractTextFromImage()" class="ocr-btn" title="Copy text from image (O)">📋</button>';
                 })
                 .catch(() => {});
 
@@ -431,6 +443,136 @@
                 startLiveStream();
             }, 500);
         }
+    }
+
+    // ========================================================================
+    // SAVE IMAGE TO DEVICE
+    // ========================================================================
+
+    window.saveImageToDevice = function() {
+        const timestamp = new Date().toISOString().slice(0, 19).replace(/:/g, '-').replace('T', '_');
+        const filename = CONFIG.CAM + '_' + timestamp + '.jpg';
+
+        const link = document.createElement('a');
+        link.href = 'pic.jpg?download=' + Date.now();
+        link.download = filename;
+        link.style.display = 'none';
+
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+
+        console.log('[' + CONFIG.CAM + '] 💾 Saving image as: ' + filename);
+    };
+
+    // ========================================================================
+    // OCR - EXTRACT TEXT FROM IMAGE
+    // ========================================================================
+
+    window.extractTextFromImage = function() {
+        const button = document.querySelector('.ocr-btn');
+        if (!button) return;
+
+        const originalContent = button.innerHTML;
+
+        button.disabled = true;
+        button.innerHTML = '⏳';
+        button.classList.add('loading');
+        console.log('[' + CONFIG.CAM + '] 📋 Extracting text from image...');
+
+        fetch('ocr.php', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: 'image=pic.jpg'
+        })
+        .then(r => r.json())
+        .then(data => {
+            if (data.success && data.hasText) {
+                copyToClipboard(data.text)
+                    .then(() => {
+                        button.innerHTML = '✅';
+                        button.classList.remove('loading');
+                        console.log('[' + CONFIG.CAM + '] ✅ Text copied (' + data.charCount + ' chars)');
+                        showNotification('Text copied! (' + data.charCount + ' chars)');
+                        setTimeout(() => {
+                            button.disabled = false;
+                            button.innerHTML = originalContent;
+                        }, 2000);
+                    })
+                    .catch(err => {
+                        button.innerHTML = '❌';
+                        button.classList.remove('loading');
+                        showNotification('Failed to copy text');
+                        setTimeout(() => {
+                            button.disabled = false;
+                            button.innerHTML = originalContent;
+                        }, 2000);
+                    });
+            } else if (data.success && !data.hasText) {
+                button.innerHTML = '⚠️';
+                button.classList.remove('loading');
+                showNotification('No text found in image');
+                setTimeout(() => {
+                    button.disabled = false;
+                    button.innerHTML = originalContent;
+                }, 2000);
+            } else {
+                button.innerHTML = '❌';
+                button.classList.remove('loading');
+                showNotification('Error: ' + (data.error || 'Unknown'));
+                setTimeout(() => {
+                    button.disabled = false;
+                    button.innerHTML = originalContent;
+                }, 2000);
+            }
+        })
+        .catch(() => {
+            button.innerHTML = '❌';
+            button.classList.remove('loading');
+            showNotification('OCR service unavailable');
+            setTimeout(() => {
+                button.disabled = false;
+                button.innerHTML = originalContent;
+            }, 2000);
+        });
+    };
+
+    function copyToClipboard(text) {
+        if (navigator.clipboard && window.isSecureContext) {
+            return navigator.clipboard.writeText(text);
+        }
+        return new Promise((resolve, reject) => {
+            const textArea = document.createElement('textarea');
+            textArea.value = text;
+            textArea.style.cssText = 'position:fixed;left:-999999px;top:-999999px;';
+            document.body.appendChild(textArea);
+            textArea.focus();
+            textArea.select();
+            try {
+                const ok = document.execCommand('copy');
+                document.body.removeChild(textArea);
+                ok ? resolve() : reject('Copy failed');
+            } catch (err) {
+                document.body.removeChild(textArea);
+                reject(err);
+            }
+        });
+    }
+
+    function showNotification(message) {
+        const existing = document.querySelector('.ocr-notification');
+        if (existing) existing.remove();
+
+        const n = document.createElement('div');
+        n.className = 'ocr-notification';
+        n.textContent = message;
+        document.body.appendChild(n);
+
+        setTimeout(() => n.classList.add('show'), 10);
+        setTimeout(() => {
+            n.classList.remove('show');
+            setTimeout(() => n.remove(), 300);
+        }, 3000);
     }
 
     // ========================================================================
