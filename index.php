@@ -28,6 +28,9 @@ if (!ob_start('ob_gzhandler')) {
 require_once __DIR__ . '/config/app-config.php';
 require_once __DIR__ . '/includes/utilities.php';
 
+// Load module system
+require_once __DIR__ . '/modules/module-loader.php';
+
 // No caching
 sendNoCacheHeaders();
 
@@ -224,6 +227,10 @@ if (isset($_POST['b1']) && $_POST['b1'] === 'inic') {
     <!-- Normal Mode: Standard assets -->
     <link rel="stylesheet" href="assets/css/file.css?v=<?= file_exists('assets/css/file.css') ? filemtime('assets/css/file.css') : time() ?>">
     <?php endif; ?>
+
+    <!-- Module CSS (loaded dynamically) -->
+    <?= $moduleLoader->getCssIncludes() ?>
+
     <?php if (!ULTRA_PERFORMANCE): ?>
     <script src="assets/js/jquery-3.7.1.min.js"></script>
     <?php endif; ?>
@@ -386,6 +393,16 @@ if (isset($_POST['b1']) && $_POST['b1'] === 'inic') {
         window.WEBSOCKET_SERVER_URL = '<?= escapeHtml(WEBSOCKET_SERVER_URL) ?>';
     </script>
     <script src="assets/js/websocket-client.js?v=<?= file_exists('assets/js/websocket-client.js') ? filemtime('assets/js/websocket-client.js') : time() ?>"></script>
+    <?php endif; ?>
+
+    <!-- Module JavaScript (loaded dynamically) -->
+    <?= $moduleLoader->getJsIncludes() ?>
+
+    <!-- Module Keybindings Configuration -->
+    <?php if (!empty($moduleLoader->getLoadedModules())): ?>
+    <script>
+        window.MODULE_KEYBINDINGS = <?= $moduleLoader->getKeybindingsJson() ?>;
+    </script>
     <?php endif; ?>
 </body>
 </html>

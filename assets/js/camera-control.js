@@ -697,16 +697,14 @@
                     $('#imageSizeText').addClass('data-text').html(
                         'Image size: ' + sizeData +
                         ' <span class="capture-time">Time: ' + captureTime + 's</span>' +
-                        ' <button onclick="saveImageToDevice()" class="save-btn" title="Save to device (S)">💾</button>' +
-                        ' <button onclick="extractTextFromImage()" class="ocr-btn" title="Copy text from image (O)">📋</button>'
+                        ' <button onclick="saveImageToDevice()" class="save-btn" title="Save to device (S)">💾</button>'
                     );
                 })
                 .fail(function() {
                     $('#imageSizeText').html(
                         'Image size: Unknown' +
                         ' <span class="capture-time">Time: ' + captureTime + 's</span>' +
-                        ' <button onclick="saveImageToDevice()" class="save-btn" title="Save to device (S)">💾</button>' +
-                        ' <button onclick="extractTextFromImage()" class="ocr-btn" title="Copy text from image (O)">📋</button>'
+                        ' <button onclick="saveImageToDevice()" class="save-btn" title="Save to device (S)">💾</button>'
                     );
                 });
         };
@@ -946,135 +944,6 @@
     };
 
     // ========================================================================
-    // OCR - EXTRACT TEXT FROM IMAGE
-    // ========================================================================
-
-    window.extractTextFromImage = function(imageName) {
-        // Default to pic.jpg if no image specified
-        const targetImage = imageName || 'pic.jpg';
-        const $button = $('.ocr-btn');
-        const originalContent = $button.html();
-
-        // Disable button and show loading
-        $button.prop('disabled', true).html('⏳').addClass('loading');
-        console.log(`[${CONFIG.CAM}] 📋 Extracting text from ${targetImage}...`);
-
-        $.ajax({
-            url: 'ocr.php',
-            type: 'POST',
-            data: { image: targetImage },
-            dataType: 'json',
-            timeout: 30000
-        })
-        .done(function(response) {
-            if (response.success && response.hasText) {
-                // Copy text to clipboard
-                copyToClipboard(response.text)
-                    .then(function() {
-                        $button.html('✅').removeClass('loading');
-                        console.log(`[${CONFIG.CAM}] ✅ Text copied to clipboard (${response.charCount} chars)`);
-
-                        // Show success notification
-                        showNotification('Text copied! (' + response.charCount + ' chars)');
-
-                        // Reset button after 2 seconds
-                        setTimeout(function() {
-                            $button.prop('disabled', false).html(originalContent);
-                        }, 2000);
-                    })
-                    .catch(function(err) {
-                        $button.html('❌').removeClass('loading');
-                        console.error(`[${CONFIG.CAM}] ❌ Failed to copy: ${err}`);
-                        showNotification('Failed to copy text');
-                        setTimeout(function() {
-                            $button.prop('disabled', false).html(originalContent);
-                        }, 2000);
-                    });
-            } else if (response.success && !response.hasText) {
-                $button.html('⚠️').removeClass('loading');
-                console.log(`[${CONFIG.CAM}] ⚠️ No text found in image`);
-                showNotification('No text found in image');
-                setTimeout(function() {
-                    $button.prop('disabled', false).html(originalContent);
-                }, 2000);
-            } else {
-                $button.html('❌').removeClass('loading');
-                console.error(`[${CONFIG.CAM}] ❌ OCR error: ${response.error}`);
-                showNotification('Error: ' + response.error);
-                setTimeout(function() {
-                    $button.prop('disabled', false).html(originalContent);
-                }, 2000);
-            }
-        })
-        .fail(function(xhr, status, error) {
-            $button.html('❌').removeClass('loading');
-            let errorMsg = 'OCR service unavailable';
-            if (xhr.responseJSON && xhr.responseJSON.error) {
-                errorMsg = xhr.responseJSON.error;
-            }
-            console.error(`[${CONFIG.CAM}] ❌ OCR failed: ${errorMsg}`);
-            showNotification(errorMsg);
-            setTimeout(function() {
-                $button.prop('disabled', false).html(originalContent);
-            }, 2000);
-        });
-    };
-
-    function copyToClipboard(text) {
-        // Modern clipboard API
-        if (navigator.clipboard && window.isSecureContext) {
-            return navigator.clipboard.writeText(text);
-        }
-
-        // Fallback for older browsers
-        return new Promise(function(resolve, reject) {
-            const textArea = document.createElement('textarea');
-            textArea.value = text;
-            textArea.style.position = 'fixed';
-            textArea.style.left = '-999999px';
-            textArea.style.top = '-999999px';
-            document.body.appendChild(textArea);
-            textArea.focus();
-            textArea.select();
-
-            try {
-                const successful = document.execCommand('copy');
-                document.body.removeChild(textArea);
-                if (successful) {
-                    resolve();
-                } else {
-                    reject('Copy command failed');
-                }
-            } catch (err) {
-                document.body.removeChild(textArea);
-                reject(err);
-            }
-        });
-    }
-
-    function showNotification(message) {
-        // Remove existing notification
-        $('.ocr-notification').remove();
-
-        // Create notification element
-        const $notification = $('<div class="ocr-notification">' + message + '</div>');
-        $('body').append($notification);
-
-        // Animate in
-        setTimeout(function() {
-            $notification.addClass('show');
-        }, 10);
-
-        // Remove after 3 seconds
-        setTimeout(function() {
-            $notification.removeClass('show');
-            setTimeout(function() {
-                $notification.remove();
-            }, 300);
-        }, 3000);
-    }
-
-    // ========================================================================
     // KEYBOARD SHORTCUTS
     // ========================================================================
 
@@ -1097,13 +966,6 @@
                 e.preventDefault();
                 window.saveImageToDevice();
                 console.log(`[${CONFIG.CAM}] ⌨️ Keyboard shortcut: Save (S)`);
-                break;
-
-            case 'o':
-                // O = OCR (extract text)
-                e.preventDefault();
-                window.extractTextFromImage();
-                console.log(`[${CONFIG.CAM}] ⌨️ Keyboard shortcut: OCR (O)`);
                 break;
 
             case 'l':
