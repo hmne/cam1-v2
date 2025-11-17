@@ -12,7 +12,10 @@ set -Eeuo pipefail
 #===============================================================================
 readonly DEVICE_ID="${DEVICE_ID:-cam1}"
 readonly BASE_URL="${BASE_URL:-http://netstorm.site/${DEVICE_ID}}"
-readonly WS_SERVER="${WS_SERVER:-}"  # Set in boot.sh to enable
+
+# WebSocket server address - CHANGE THIS TO YOUR VPS IP
+readonly WS_SERVER="193.160.119.136:8080"
+
 readonly HEARTBEAT_SEC=3
 readonly MAX_RECONNECT_DELAY=30
 
@@ -25,15 +28,6 @@ readonly LOG_FILE="/var/log/websocket.log"
 
 # Export for consistency
 export DEVICE_ID BASE_URL
-
-
-#===============================================================================
-# PRE-CHECK: Exit cleanly if not enabled
-#===============================================================================
-[[ -z "$WS_SERVER" ]] && {
-    printf '[%s] WebSocket disabled (WS_SERVER not set)\n' "$(date '+%H:%M:%S')"
-    exit 0
-}
 
 
 #===============================================================================
