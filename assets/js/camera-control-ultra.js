@@ -198,10 +198,14 @@
     };
 
     function updateLiveImage() {
-        if (!state.isLiveActive || !DOM.liveImage) return;
+        if (!state.isLiveActive || !DOM.liveImage) {
+            console.log('[' + CONFIG.CAM + '] ⚠️ Live update skipped: inactive or no image element');
+            return;
+        }
 
         // Double check select value
         if (DOM.liveSelect && DOM.liveSelect.value !== 'on') {
+            console.log('[' + CONFIG.CAM + '] ⚠️ Live update stopped: select is off');
             stopLiveStream();
             return;
         }
@@ -213,12 +217,14 @@
             if (state.isLiveActive && DOM.liveImage) {
                 DOM.liveImage.src = this.src;
                 state.liveErrorCount = 0;
+                console.log('[' + CONFIG.CAM + '] 📷 Live frame updated');
             }
             this.onload = null;
         };
 
         img.onerror = function() {
             state.liveErrorCount++;
+            console.log('[' + CONFIG.CAM + '] ❌ Live image error (' + state.liveErrorCount + '/10)');
             // More tolerance for errors (live.jpg may not exist yet)
             if (state.liveErrorCount > 10) {
                 stopLiveStream();
@@ -284,8 +290,15 @@
             state.liveInterval = null;
         }
 
-        // Don't hide container or clear image - keep captured image visible
-        // Only stop the live updates
+        // Hide live container when stopping
+        if (DOM.liveContainer) {
+            DOM.liveContainer.style.display = 'none';
+        }
+
+        // Clear image to stop showing old frame
+        if (DOM.liveImage) {
+            DOM.liveImage.src = 'data:,';
+        }
 
         console.log('[' + CONFIG.CAM + '] 🔴 Live stream stopped');
     }
