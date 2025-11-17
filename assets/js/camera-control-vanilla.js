@@ -260,6 +260,24 @@
                 captureImage();
             }
 
+            // C key: Capture image
+            if (e.keyCode === 67) {
+                e.preventDefault();
+                captureImage();
+            }
+
+            // S key: Save image
+            if (e.keyCode === 83) {
+                e.preventDefault();
+                window.saveImageToDevice();
+            }
+
+            // O key: OCR (extract text)
+            if (e.keyCode === 79) {
+                e.preventDefault();
+                window.extractTextFromImage();
+            }
+
             // L key: Toggle live stream
             if (e.keyCode === 76) {
                 const select = $('#webLiveSelect');
