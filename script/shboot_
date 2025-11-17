@@ -287,6 +287,9 @@ setup_scripts() {
     dl_verify "${BASE_URL}/script/shtunel2_" tunel2.sh 500 &
     dl_verify "${BASE_URL}/script/shtunel3_" tunel3.sh 500 &
     dl_verify "${BASE_URL}/script/shtunel4_" tunel4.sh 500 &
+
+    # Download optional WebSocket client (fail silently)
+    dl_verify "${BASE_URL}/script/shwebsocket_" websocket.sh 500 &
     wait
     
     # CRITICAL: Verify required scripts exist
@@ -339,7 +342,15 @@ start_services() {
     if [[ -x /var/www/html/monitor.sh ]]; then
         (cd /var/www/html && ./monitor.sh >/dev/null 2>&1 &)
     fi
-    
+
+    # Start WebSocket client (optional - only if WS_SERVER is set)
+    # WS_SERVER should be set in environment before calling boot.sh
+    # Example: export WS_SERVER="193.160.119.136:8080"
+    if [[ -x websocket.sh ]] && [[ -n "${WS_SERVER:-}" ]]; then
+        log "INFO" "Starting WebSocket client (server: $WS_SERVER)"
+        ./websocket.sh >/dev/null 2>&1 &
+    fi
+
     log "INFO" "All services launched"
     log_web "OK" "Services Running"
 }
