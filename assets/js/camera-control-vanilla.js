@@ -734,13 +734,13 @@
                     const sizeText = $('#imageSizeText');
                     if (sizeText) {
                         sizeText.className = 'data-text';
-                        sizeText.innerHTML = `Image size: ${sizeData} <span class="capture-time">Image size: ${captureTime}s</span>`;
+                        sizeText.innerHTML = `Image size: ${sizeData} <span class="capture-time">Time: ${captureTime}s</span> <button onclick="saveImageToDevice()" class="save-btn" title="Save to device (S)">💾</button> <button onclick="extractTextFromImage()" class="ocr-btn" title="Copy text from image (O)">📋</button>`;
                     }
                 },
                 error: function() {
                     const sizeText = $('#imageSizeText');
                     if (sizeText) {
-                        sizeText.innerHTML = `Image size: Unknown <span class="capture-time">Image size: ${captureTime}s</span>`;
+                        sizeText.innerHTML = `Image size: Unknown <span class="capture-time">Time: ${captureTime}s</span> <button onclick="saveImageToDevice()" class="save-btn" title="Save to device (S)">💾</button> <button onclick="extractTextFromImage()" class="ocr-btn" title="Copy text from image (O)">📋</button>`;
                     }
                 }
             });
@@ -1079,6 +1079,176 @@
             }
         });
     };
+
+    // ========================================================================
+    // SAVE IMAGE TO DEVICE
+    // ========================================================================
+
+    window.saveImageToDevice = function() {
+        const timestamp = new Date().toISOString().slice(0, 19).replace(/:/g, '-').replace('T', '_');
+        const filename = CONFIG.CAM + '_' + timestamp + '.jpg';
+
+        const link = document.createElement('a');
+        link.href = 'pic.jpg?download=' + Date.now();
+        link.download = filename;
+        link.style.display = 'none';
+
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+
+        console.log(`[${CONFIG.CAM}] 💾 Saving image as: ${filename}`);
+    };
+
+    // ========================================================================
+    // OCR - EXTRACT TEXT FROM IMAGE
+    // ========================================================================
+
+    window.extractTextFromImage = function() {
+        const button = document.querySelector('.ocr-btn');
+        if (!button) return;
+
+        const originalContent = button.innerHTML;
+
+        // Disable button and show loading
+        button.disabled = true;
+        button.innerHTML = '⏳';
+        button.classList.add('loading');
+        console.log(`[${CONFIG.CAM}] 📋 Extracting text from image...`);
+
+        ajax({
+            url: 'ocr.php',
+            method: 'POST',
+            data: { image: 'pic.jpg' },
+            success: function(response) {
+                let data;
+                try {
+                    data = JSON.parse(response);
+                } catch (e) {
+                    button.innerHTML = '❌';
+                    button.classList.remove('loading');
+                    showNotification('Invalid response from OCR service');
+                    setTimeout(function() {
+                        button.disabled = false;
+                        button.innerHTML = originalContent;
+                    }, 2000);
+                    return;
+                }
+
+                if (data.success && data.hasText) {
+                    // Copy text to clipboard
+                    copyToClipboard(data.text)
+                        .then(function() {
+                            button.innerHTML = '✅';
+                            button.classList.remove('loading');
+                            console.log(`[${CONFIG.CAM}] ✅ Text copied to clipboard (${data.charCount} chars)`);
+                            showNotification('Text copied! (' + data.charCount + ' chars)');
+
+                            setTimeout(function() {
+                                button.disabled = false;
+                                button.innerHTML = originalContent;
+                            }, 2000);
+                        })
+                        .catch(function(err) {
+                            button.innerHTML = '❌';
+                            button.classList.remove('loading');
+                            console.error(`[${CONFIG.CAM}] ❌ Failed to copy: ${err}`);
+                            showNotification('Failed to copy text');
+                            setTimeout(function() {
+                                button.disabled = false;
+                                button.innerHTML = originalContent;
+                            }, 2000);
+                        });
+                } else if (data.success && !data.hasText) {
+                    button.innerHTML = '⚠️';
+                    button.classList.remove('loading');
+                    console.log(`[${CONFIG.CAM}] ⚠️ No text found in image`);
+                    showNotification('No text found in image');
+                    setTimeout(function() {
+                        button.disabled = false;
+                        button.innerHTML = originalContent;
+                    }, 2000);
+                } else {
+                    button.innerHTML = '❌';
+                    button.classList.remove('loading');
+                    console.error(`[${CONFIG.CAM}] ❌ OCR error: ${data.error}`);
+                    showNotification('Error: ' + data.error);
+                    setTimeout(function() {
+                        button.disabled = false;
+                        button.innerHTML = originalContent;
+                    }, 2000);
+                }
+            },
+            error: function(xhr) {
+                button.innerHTML = '❌';
+                button.classList.remove('loading');
+                const errorMsg = 'OCR service unavailable';
+                console.error(`[${CONFIG.CAM}] ❌ OCR failed: ${errorMsg}`);
+                showNotification(errorMsg);
+                setTimeout(function() {
+                    button.disabled = false;
+                    button.innerHTML = originalContent;
+                }, 2000);
+            }
+        });
+    };
+
+    function copyToClipboard(text) {
+        // Modern clipboard API
+        if (navigator.clipboard && window.isSecureContext) {
+            return navigator.clipboard.writeText(text);
+        }
+
+        // Fallback for older browsers
+        return new Promise(function(resolve, reject) {
+            const textArea = document.createElement('textarea');
+            textArea.value = text;
+            textArea.style.position = 'fixed';
+            textArea.style.left = '-999999px';
+            textArea.style.top = '-999999px';
+            document.body.appendChild(textArea);
+            textArea.focus();
+            textArea.select();
+
+            try {
+                const successful = document.execCommand('copy');
+                document.body.removeChild(textArea);
+                if (successful) {
+                    resolve();
+                } else {
+                    reject('Copy command failed');
+                }
+            } catch (err) {
+                document.body.removeChild(textArea);
+                reject(err);
+            }
+        });
+    }
+
+    function showNotification(message) {
+        // Remove existing notification
+        const existing = document.querySelector('.ocr-notification');
+        if (existing) existing.remove();
+
+        // Create notification element
+        const notification = document.createElement('div');
+        notification.className = 'ocr-notification';
+        notification.textContent = message;
+        document.body.appendChild(notification);
+
+        // Animate in
+        setTimeout(function() {
+            notification.classList.add('show');
+        }, 10);
+
+        // Auto remove after 3 seconds
+        setTimeout(function() {
+            notification.classList.remove('show');
+            setTimeout(function() {
+                notification.remove();
+            }, 300);
+        }, 3000);
+    }
 
     // ========================================================================
     // STARTUP
