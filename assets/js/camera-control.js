@@ -949,18 +949,20 @@
     // OCR - EXTRACT TEXT FROM IMAGE
     // ========================================================================
 
-    window.extractTextFromImage = function() {
+    window.extractTextFromImage = function(imageName) {
+        // Default to pic.jpg if no image specified
+        const targetImage = imageName || 'pic.jpg';
         const $button = $('.ocr-btn');
         const originalContent = $button.html();
 
         // Disable button and show loading
         $button.prop('disabled', true).html('⏳').addClass('loading');
-        console.log(`[${CONFIG.CAM}] 📋 Extracting text from image...`);
+        console.log(`[${CONFIG.CAM}] 📋 Extracting text from ${targetImage}...`);
 
         $.ajax({
             url: 'ocr.php',
             type: 'POST',
-            data: { image: 'pic.jpg' },
+            data: { image: targetImage },
             dataType: 'json',
             timeout: 30000
         })
