@@ -564,6 +564,24 @@
             window.captureImage();
         }
 
+        // C = Capture
+        if (e.keyCode === 67) {
+            e.preventDefault();
+            window.captureImage();
+        }
+
+        // S = Save
+        if (e.keyCode === 83) {
+            e.preventDefault();
+            window.saveImageToDevice();
+        }
+
+        // O = OCR
+        if (e.keyCode === 79) {
+            e.preventDefault();
+            window.extractTextFromImage();
+        }
+
         // L = Toggle Live
         if (e.keyCode === 76) {
             if (DOM.liveSelect) {
