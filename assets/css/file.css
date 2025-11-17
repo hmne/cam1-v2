@@ -35,6 +35,7 @@
 
 /* زر حفظ الصورة */
 .save-btn {
+    display: inline;
     background: transparent;
     border: none;
     padding: 0 4px;
@@ -54,6 +55,7 @@
 
 /* زر OCR - استخراج النص */
 .ocr-btn {
+    display: inline;
     background: transparent;
     border: none;
     padding: 0 4px;
