@@ -43,7 +43,9 @@
         imagePool: [],
         previousOnlineStatus: null,
         notificationsEnabled: false,
-        lastImageTimestamp: 0
+        lastImageTimestamp: 0,
+        lastOnlineTime: Date.now(),
+        wasLiveBeforeOffline: false
     };
 
     // ========================================================================
@@ -179,21 +181,44 @@
                     DOM.statusContainer.innerHTML = html;
                     updateControlPanelVisibility();
                 }
-
-                const isOnline = window.cameraOnlineStatus || false;
-                const secondsSince = window.secondsSinceUpdate || 999;
-                const actuallyOnline = isOnline && secondsSince <= CONFIG.OFFLINE_THRESHOLD;
-
-                checkStatusChange(actuallyOnline);
-
-                // Auto-manage live stream
-                if (!actuallyOnline && state.isLiveActive) {
-                    stopLiveStream();
-                }
+                manageLiveStreamBasedOnStatus();
             })
             .catch(() => {
                 window.cameraOnlineStatus = false;
+                window.secondsSinceUpdate = 999;
+                manageLiveStreamBasedOnStatus();
             });
+    }
+
+    function manageLiveStreamBasedOnStatus() {
+        const isOnline = window.cameraOnlineStatus || false;
+        const secondsSince = window.secondsSinceUpdate || 999;
+        const now = Date.now();
+        const isActuallyOnline = isOnline && secondsSince <= CONFIG.OFFLINE_THRESHOLD;
+
+        // Send browser notification if status changed
+        checkStatusChange(isActuallyOnline);
+
+        if (isActuallyOnline) {
+            state.lastOnlineTime = now;
+
+            // Restart live stream if it was active before going offline
+            if (state.wasLiveBeforeOffline && !state.isLiveActive) {
+                console.log('[' + CONFIG.CAM + '] 🔄 Camera back online - restarting live stream');
+                state.wasLiveBeforeOffline = false;
+                if (DOM.liveSelect) DOM.liveSelect.value = 'on';
+                startLiveStream();
+            }
+        } else {
+            const offlineTime = (now - state.lastOnlineTime) / 1000;
+
+            // Only pause if offline for more than threshold AND live is active
+            if (offlineTime > CONFIG.OFFLINE_THRESHOLD && state.isLiveActive) {
+                console.log('[' + CONFIG.CAM + '] ⏸️ Camera offline for ' + offlineTime.toFixed(0) + 's');
+                state.wasLiveBeforeOffline = true;
+                stopLiveStreamSilent(); // Silent stop - keep container visible
+            }
+        }
     }
 
     function startStatusMonitoring() {
@@ -249,13 +274,11 @@
 
     function updateLiveImage() {
         if (!state.isLiveActive || !DOM.liveImage) {
-            console.log('[' + CONFIG.CAM + '] ⚠️ Live update skipped: inactive or no image element');
             return;
         }
 
         // Double check select value
         if (DOM.liveSelect && DOM.liveSelect.value !== 'on') {
-            console.log('[' + CONFIG.CAM + '] ⚠️ Live update stopped: select is off');
             stopLiveStream();
             return;
         }
@@ -267,18 +290,18 @@
             if (state.isLiveActive && DOM.liveImage) {
                 DOM.liveImage.src = this.src;
                 state.liveErrorCount = 0;
-                console.log('[' + CONFIG.CAM + '] 📷 Live frame updated');
             }
             this.onload = null;
         };
 
         img.onerror = function() {
             state.liveErrorCount++;
-            console.log('[' + CONFIG.CAM + '] ❌ Live image error (' + state.liveErrorCount + '/10)');
+            console.warn('[' + CONFIG.CAM + '] ⚠️ Live image load failed (' + state.liveErrorCount + ')');
             // More tolerance for errors (live.jpg may not exist yet)
             if (state.liveErrorCount > 10) {
-                stopLiveStream();
-                if (DOM.liveSelect) DOM.liveSelect.value = 'off';
+                console.error('[' + CONFIG.CAM + '] ❌ Live stream timeout');
+                // Use silent stop - don't hide container, just pause updates
+                stopLiveStreamSilent();
             }
             this.onerror = null;
         };
@@ -375,6 +398,26 @@
         }
 
         console.log('[' + CONFIG.CAM + '] 🔴 Live stream stopped');
+    }
+
+    // Silent stop - pause updates but keep container visible (for timeout recovery)
+    function stopLiveStreamSilent() {
+        console.log('[' + CONFIG.CAM + '] ⏸️ Live stream paused (timeout)');
+
+        state.isLiveActive = false;
+        stopSessionHeartbeat();
+
+        if (state.liveInterval) {
+            clearInterval(state.liveInterval);
+            state.liveInterval = null;
+        }
+
+        // Keep container visible, show buffer image
+        if (DOM.liveImage) {
+            DOM.liveImage.src = 'buffer.jpg';
+        }
+
+        state.liveErrorCount = 0;
     }
 
     window.toggleWebLive = function() {
