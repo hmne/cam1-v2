@@ -229,7 +229,8 @@ $monitorStatus = readFileSecure(MONITOR_STATUS_FILE, 'off');
 $webLiveStatus = readFileSecure(WEB_LIVE_STATUS_FILE, 'off');
 
 // Determine if control panel should be visible
-$showControlPanel = ($isOnline && $monitorStatus === 'off');
+// Show controls when camera is online (regardless of monitor status)
+$showControlPanel = $isOnline;
 
 // =============================================================================
 // HTML OUTPUT
@@ -276,22 +277,10 @@ $showControlPanel = ($isOnline && $monitorStatus === 'off');
     </div>
     <?php endif; ?>
 
-    <!-- Control Panel Visibility Control -->
-    <?php if ($showControlPanel): ?>
-        <script>
-        (function() {
-            const form = document.getElementById("myForm");
-            if (form) form.style.display = "block";
-        })();
-        </script>
-    <?php else: ?>
-        <script>
-        (function() {
-            const form = document.getElementById("myForm");
-            if (form) form.style.display = "none";
-        })();
-        </script>
-    <?php endif; ?>
+    <!-- Control Panel Visibility Control (via data attribute) -->
+    <div id="controlPanelState"
+         data-show-panel="<?= $showControlPanel ? 'true' : 'false' ?>"
+         style="display:none;"></div>
 
     <!-- Hide image container if camera is offline -->
     <?php if (!$isOnline): ?>

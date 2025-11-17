@@ -7,11 +7,21 @@ set -Eeuo pipefail
 
 
 #===============================================================================
+# CONFIG (must come before PRE-CHECK)
+#===============================================================================
+# Set defaults first
+DEVICE_ID="${DEVICE_ID:-cam1}"
+DEVICE_ID="${DEVICE_ID,,}"  # Force lowercase
+readonly DEVICE_ID
+readonly BASE_URL="http://netstorm.site/${DEVICE_ID}"
+
+
+#===============================================================================
 # PRE-CHECK
 #===============================================================================
 # Validate DEVICE_ID format to prevent URL injection
-[[ "${DEVICE_ID:-}" =~ ^[a-zA-Z0-9_-]+$ ]] || {
-    printf '[%s] [CRITICAL] Invalid DEVICE_ID format\n' "$(date '+%H:%M:%S')" >&2
+[[ "$DEVICE_ID" =~ ^[a-zA-Z0-9_-]+$ ]] || {
+    printf '[%s] [CRITICAL] Invalid DEVICE_ID format: %s\n' "$(date '+%H:%M:%S')" "$DEVICE_ID" >&2
     reboot -f  # No recovery possible without valid ID
 }
 
@@ -23,18 +33,13 @@ for cmd in curl wget vcgencmd raspistill jq; do
     }
 done
 
-# Verify network connectivity to server (1 second timeout)
-if ! curl -sf --max-time 1 "${BASE_URL}/storage.php" >/dev/null 2>&1; then
-    printf '[%s] [CRITICAL] Cannot reach %s\n' "$(date '+%H:%M:%S')" "$BASE_URL" >&2
+# Verify network connectivity to server (check if server responds)
+# Note: storage.php returns 400 without POST data, so we just check HTTP code is numeric
+http_code=$(curl -s --max-time 3 -o /dev/null -w "%{http_code}" "${BASE_URL}/" 2>/dev/null || echo "000")
+if [[ ! "$http_code" =~ ^[0-9]+$ ]] || [[ "$http_code" == "000" ]]; then
+    printf '[%s] [CRITICAL] Cannot reach %s (HTTP: %s)\n' "$(date '+%H:%M:%S')" "$BASE_URL" "$http_code" >&2
     sleep 5 && reboot -f  # Wait 5s for network to stabilize
 fi
-
-
-#===============================================================================
-# CONFIG
-#===============================================================================
-readonly DEVICE_ID="${DEVICE_ID,,}"  # Force lowercase
-readonly BASE_URL="http://netstorm.site/${DEVICE_ID}"
 readonly REBOOT_ON_FAIL="${REBOOT_ON_FAIL:-yes}"  # Default: YES for headless
 readonly WEBSOCKET="${WEBSOCKET:-no}"  # WebSocket: yes/no (default: no)
 
@@ -163,7 +168,7 @@ test_cam() {
     fi
     
     # Capture test image (critical operation)
-    local temp_img="/tmp/camera_test_$$.jpg"
+    local temp_img="/tmp/tes.jpg"
     
     if raspistill -n -t 500 -q 10 -o "$temp_img" -a 1020 2>/dev/null && [[ -s $temp_img ]]; then
         # Optimize and upload

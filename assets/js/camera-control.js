@@ -478,6 +478,17 @@
         }, CONFIG.STATUS_UPDATE_INTERVAL);
     }
 
+    function updateControlPanelVisibility() {
+        const $stateElement = $('#controlPanelState');
+        if ($stateElement.length) {
+            const shouldShow = $stateElement.data('show-panel') === true || $stateElement.data('show-panel') === 'true';
+            const $form = $('#myForm');
+            if ($form.length) {
+                $form.css('display', shouldShow ? 'block' : 'none');
+            }
+        }
+    }
+
     function loadCameraStatus() {
         $.ajax({
             url: 'mode.php?t=' + generateCacheBuster(),
@@ -489,6 +500,7 @@
                 state.statusRetryCount = 0;
                 state.firstLoad = false;
                 $('#id1').html(response);
+                updateControlPanelVisibility();
                 manageLiveStreamBasedOnStatus();
             },
             error: function(xhr) {

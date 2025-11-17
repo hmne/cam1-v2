@@ -460,6 +460,20 @@
     }
 
     /**
+     * Update control panel visibility based on mode.php data attribute
+     */
+    function updateControlPanelVisibility() {
+        const stateElement = $('#controlPanelState');
+        if (stateElement) {
+            const shouldShow = stateElement.getAttribute('data-show-panel') === 'true';
+            const form = $('#myForm');
+            if (form) {
+                form.style.display = shouldShow ? 'block' : 'none';
+            }
+        }
+    }
+
+    /**
      * Load and display camera status
      */
     function loadCameraStatus() {
@@ -475,6 +489,8 @@
                     container.innerHTML = response;
                     // Execute scripts that came with the HTML
                     executeScripts(container);
+                    // Update control panel visibility based on data attribute
+                    updateControlPanelVisibility();
                 }
                 manageLiveStreamBasedOnStatus();
             },

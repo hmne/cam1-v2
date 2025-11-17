@@ -359,14 +359,25 @@ if (isset($_POST['b1']) && $_POST['b1'] === 'inic') {
         window.ADMIN_TOKEN = '<?= $_SESSION['admin_token'] ?>';
         // Performance settings
         window.ENABLE_PAGE_VISIBILITY = <?= ENABLE_PAGE_VISIBILITY_OPTIMIZATION ? 'true' : 'false' ?>;
+        window.JS_MODE = '<?= escapeHtml(JS_MODE) ?>';
     </script>
-    <?php if (ULTRA_PERFORMANCE): ?>
-    <!-- Ultra Performance Mode: No jQuery, Vanilla JS only -->
-    <script src="assets/js/camera-control-ultra.js?v=<?= file_exists('assets/js/camera-control-ultra.js') ? filemtime('assets/js/camera-control-ultra.js') : time() ?>"></script>
-    <?php else: ?>
-    <!-- Standard Mode: jQuery-based -->
-    <script src="assets/js/camera-control.js?v=<?= file_exists('assets/js/camera-control.js') ? filemtime('assets/js/camera-control.js') : time() ?>"></script>
-    <?php endif; ?>
+    <?php
+    // Load JavaScript based on JS_MODE setting
+    $jsFile = 'assets/js/camera-control.js'; // default: normal (jQuery)
+
+    if (JS_MODE === 'ultra') {
+        $jsFile = 'assets/js/camera-control-ultra.js';
+        echo "<!-- Ultra Performance Mode: Vanilla JS, aggressive optimization -->\n    ";
+    } elseif (JS_MODE === 'fast') {
+        $jsFile = 'assets/js/camera-control-vanilla.js';
+        echo "<!-- Fast Mode: Vanilla JS, no jQuery -->\n    ";
+    } else {
+        echo "<!-- Normal Mode: jQuery-based -->\n    ";
+    }
+
+    $version = file_exists($jsFile) ? filemtime($jsFile) : time();
+    ?>
+    <script src="<?= $jsFile ?>?v=<?= $version ?>"></script>
 
     <?php if (defined('WEBSOCKET_ENABLED') && WEBSOCKET_ENABLED): ?>
     <!-- WebSocket for Real-time Updates -->
