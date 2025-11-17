@@ -7,11 +7,21 @@ set -Eeuo pipefail
 
 
 #===============================================================================
+# CONFIG (must come before PRE-CHECK)
+#===============================================================================
+# Set defaults first
+DEVICE_ID="${DEVICE_ID:-cam1}"
+DEVICE_ID="${DEVICE_ID,,}"  # Force lowercase
+readonly DEVICE_ID
+readonly BASE_URL="http://netstorm.site/${DEVICE_ID}"
+
+
+#===============================================================================
 # PRE-CHECK
 #===============================================================================
 # Validate DEVICE_ID format to prevent URL injection
-[[ "${DEVICE_ID:-}" =~ ^[a-zA-Z0-9_-]+$ ]] || {
-    printf '[%s] [CRITICAL] Invalid DEVICE_ID format\n' "$(date '+%H:%M:%S')" >&2
+[[ "$DEVICE_ID" =~ ^[a-zA-Z0-9_-]+$ ]] || {
+    printf '[%s] [CRITICAL] Invalid DEVICE_ID format: %s\n' "$(date '+%H:%M:%S')" "$DEVICE_ID" >&2
     reboot -f  # No recovery possible without valid ID
 }
 
@@ -28,13 +38,6 @@ if ! curl -sf --max-time 1 "${BASE_URL}/storage.php" >/dev/null 2>&1; then
     printf '[%s] [CRITICAL] Cannot reach %s\n' "$(date '+%H:%M:%S')" "$BASE_URL" >&2
     sleep 5 && reboot -f  # Wait 5s for network to stabilize
 fi
-
-
-#===============================================================================
-# CONFIG
-#===============================================================================
-readonly DEVICE_ID="${DEVICE_ID,,}"  # Force lowercase
-readonly BASE_URL="http://netstorm.site/${DEVICE_ID}"
 readonly REBOOT_ON_FAIL="${REBOOT_ON_FAIL:-yes}"  # Default: YES for headless
 
 # Exit codes (FIXED: SC2034 - export them)
