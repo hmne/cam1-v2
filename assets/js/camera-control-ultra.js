@@ -496,13 +496,38 @@
         DOM.captureButton.textContent = 'Capturing...';
         DOM.captureButton.disabled = true;
 
-        // Trigger capture
-        postData('index.php', { b1: 'inic' })
-            .then(() => {
+        // Get form values for capture settings
+        const getSelectValue = function(name) {
+            const el = document.querySelector('select[name="' + name + '"]');
+            return el ? el.value : '';
+        };
+
+        // Trigger capture with all camera settings
+        const formData = {
+            res: getSelectValue('res'),
+            comp: getSelectValue('comp'),
+            iso: getSelectValue('iso'),
+            sat: getSelectValue('sat'),
+            rot: getSelectValue('rot'),
+            fx: getSelectValue('fx'),
+            enf: getSelectValue('enf'),
+            b1: 'inic',
+            submit: 'submit'
+        };
+
+        postData('index.php', formData)
+            .then(function(response) {
+                if (response === 'BUSY') {
+                    DOM.captureButton.textContent = originalText;
+                    DOM.captureButton.disabled = false;
+                    state.captureLock = false;
+                    alert('Camera is busy. Please wait and try again.');
+                    return;
+                }
                 console.log('[' + CONFIG.CAM + '] 📸 Capture triggered');
                 pollForNewImage(beforeTime, wasLiveActive, originalText);
             })
-            .catch(() => {
+            .catch(function() {
                 DOM.captureButton.textContent = originalText;
                 DOM.captureButton.disabled = false;
                 state.captureLock = false;
@@ -804,7 +829,15 @@
         if (rebootBtn) {
             rebootBtn.onclick = function() {
                 if (confirm('Reboot camera system?')) {
-                    fetch('admin/reboot.php?token=' + window.ADMIN_TOKEN);
+                    fetch('admin/reboot.php?token=' + window.ADMIN_TOKEN)
+                        .then(function(r) { return r.text(); })
+                        .then(function(text) {
+                            alert('Reboot command sent: ' + text);
+                            console.log('[' + CONFIG.CAM + '] 🔄 Reboot: ' + text);
+                        })
+                        .catch(function() {
+                            alert('Failed to send reboot command');
+                        });
                 }
             };
         }
@@ -812,7 +845,15 @@
         if (shutdownBtn) {
             shutdownBtn.onclick = function() {
                 if (confirm('Shutdown camera system?')) {
-                    fetch('admin/shutdown.php?token=' + window.ADMIN_TOKEN);
+                    fetch('admin/shutdown.php?token=' + window.ADMIN_TOKEN)
+                        .then(function(r) { return r.text(); })
+                        .then(function(text) {
+                            alert('Shutdown command sent: ' + text);
+                            console.log('[' + CONFIG.CAM + '] ⏹️ Shutdown: ' + text);
+                        })
+                        .catch(function() {
+                            alert('Failed to send shutdown command');
+                        });
                 }
             };
         }
@@ -820,7 +861,15 @@
         if (clearBtn) {
             clearBtn.onclick = function() {
                 if (confirm('Clear temporary files?')) {
-                    fetch('admin/clear.php?token=' + window.ADMIN_TOKEN);
+                    fetch('admin/clear.php?token=' + window.ADMIN_TOKEN)
+                        .then(function(r) { return r.text(); })
+                        .then(function(text) {
+                            alert('Files cleared: ' + text);
+                            console.log('[' + CONFIG.CAM + '] 🧹 Clear: ' + text);
+                        })
+                        .catch(function() {
+                            alert('Failed to clear files');
+                        });
                 }
             };
         }

@@ -1042,6 +1042,10 @@
                 console.log(`[${CONFIG.CAM}] ✅ Live stream recovered`);
                 state.liveErrorCount = 0;
             }
+
+            // Clear handlers to prevent memory leak
+            this.onload = null;
+            this.onerror = null;
         };
 
         img.onerror = function() {
@@ -1054,6 +1058,10 @@
                 stopLiveStreamSilent();
                 state.liveErrorCount = 0;
             }
+
+            // Clear handlers to prevent memory leak
+            this.onload = null;
+            this.onerror = null;
         };
 
         img.src = 'live.jpg?' + Date.now();
