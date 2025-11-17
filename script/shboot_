@@ -393,22 +393,30 @@ load_plugins() {
     if [[ -n $plugins ]]; then
         while IFS= read -r script; do
             [[ -n $script ]] || continue
-            
-            local plugin_name="${script%.*}"  # Remove .sh extension
-            log "INFO" "Loading plugin: $plugin_name"
-            
+
+            # Extract filename from path: "scripts/shbattery_" → "shbattery_"
+            local script_basename="${script##*/}"
+
+            # Convert web name to device name: "shbattery_" → "battery.sh"
+            # Remove "sh" prefix and "_" suffix, add ".sh"
+            local device_name="${script_basename#sh}"  # Remove "sh" prefix
+            device_name="${device_name%_}"              # Remove "_" suffix
+            device_name="${device_name}.sh"             # Add ".sh" extension
+
+            log "INFO" "Loading plugin: $script_basename → $device_name"
+
             local script_url="${BASE_URL}/includes/plugins/$script"
-            local script_file="/tmp/plugin_${plugin_name}.sh"
-            
+            local script_file="/tmp/${device_name}"
+
             if dl_verify "$script_url" "$script_file" 100 2>/dev/null; then
                 chmod +x "$script_file" 2>/dev/null || :
-                (cd /tmp && [[ -x $script_file ]] && ./"plugin_${plugin_name}.sh" >/dev/null 2>&1 &)
-                
-                log "INFO" "Plugin started: $plugin_name"
-                log_web "OK" "Plugin Loaded: $plugin_name"
+                (cd /tmp && [[ -x $script_file ]] && ./"$device_name" >/dev/null 2>&1 &)
+
+                log "INFO" "Plugin started: $device_name"
+                log_web "OK" "Plugin Loaded: ${device_name%.sh}"
             else
-                log "WARN" "Plugin download failed: $plugin_name"
-                log_web "WARN" "Plugin ${plugin_name} missing"
+                log "WARN" "Plugin download failed: $script_basename"
+                log_web "WARN" "Plugin ${device_name%.sh} missing"
                 [[ -f $script_file ]] && rm -f "$script_file"
             fi
         done <<< "$plugins"
